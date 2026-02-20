@@ -1,0 +1,29 @@
+---
+title: Lattice Boltzmann Method
+date: 2/18/26
+author:
+  - name: Alex Kiefer
+    id: akiefer3
+    orcid: 0000-0002-5398-8740
+    email: akiefer3@vols.utk.edu
+    affiliation: 
+      - name: University of Tennessee, Knoxville
+        city: Knoxville
+        state: TN
+        url: www.utk.edu
+keep-intermediates: false
+format: 
+  pdf:
+    pdf-engine: tectonic
+    code-overflow: wrap
+    geometry:
+      - margin=1in
+    include-in-header:
+      - text: |
+          \usepackage{fvextra}
+          \fvset{breaklines=true, breakanywhere=true}
+    include-before-body:
+      - text: |
+          \DefineVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+---
+
