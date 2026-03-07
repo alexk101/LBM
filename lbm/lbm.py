@@ -85,6 +85,15 @@ class LBM2D(LBM):
         dist.lift(self.lattice)
 
 
+def plot_fields(u: Field2D, rho: Field2D, t: float):
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    u.plot(fig, axes[0])       # 3 axes: norm, u.x, u.y
+    rho.plot(fig, axes[1, :2]) # 2 axes: norm, rho (skip 3rd subplot)
+    axes[1][2].remove()
+    fig.suptitle(f"Time: {t:.1f} seconds")
+    fig.savefig(f"plots/fields_{t:.1f}.png")
+
+
 def main():
     X = 100
     Y = 100
@@ -98,21 +107,24 @@ def main():
     # Velocity field
     u = Field2D(name="u", X=X, Y=Y, level=Level.Macroscopic, units="m/s", component_names=["x", "y"])
 
+    plot_fields(u, rho, 0)
+
     print(f"Before")
     print(f"rho: {rho.field.sum()}")
     print(f"u: {u.field.sum()}")
     tau = 0.5
     lbm = LBM2D(u, rho, tau, 0.1, 10)
-    dist: Particle
-    dist = lbm.run()[0]
-    print(f"After")
-    print(f"rho: {rho.field.sum()}")
-    print(f"u: {u.field.sum()}")
-    fig, axes = plt.subplots(2, 3)
-    dist.u.plot(fig, axes[0])       # 3 axes: norm, u.x, u.y
-    dist.rho.plot(fig, axes[1, :2]) # 2 axes: norm, rho (skip 3rd subplot)
-    axes[1][2].remove()
-    plt.show()
+
+    for i in range(10):
+        lbm.step()
+        lbm.t += lbm.dt
+        plot_fields(u, rho, lbm.t)
+
+    # dist: Particle
+    # dist = lbm.run()[0]
+    # print(f"After")
+    # print(f"rho: {rho.field.sum()}")
+    # print(f"u: {u.field.sum()}")
 
 
 if __name__ == "__main__":

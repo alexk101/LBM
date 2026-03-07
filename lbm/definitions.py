@@ -1,11 +1,15 @@
 from enum import Enum
 
+
 class Level(Enum):
-    Macroscopic = 1
-    Microscopic = 2
+    """Field level indicates the physical abstraction layer."""
+
+    MACROSCOPIC = "macroscopic"  # Density, velocity, temperature
+    MICROSCOPIC = "microscopic"  # Distribution functions f_i
+
 
 # Physical constants
-R = 8.31446261 # J/(mol*K)
+R = 8.31446261  # J/(mol*K)
 
 # The boltzmann BGK equation for conserved mass and energy:
 # $D$ = dimension

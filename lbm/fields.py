@@ -1,49 +1,77 @@
-from dataclasses import dataclass
-from abc import ABC, abstractmethod
-from definitions import *
-from jax import Array
+"""Definitions for Fields:
+Mathematical fields are easily representable as arrays, but lack critical metadata
+about what the field represents. The Field class provides a way to attach this metadata
+to an array to allow for simpler visualization, interpretation, and debugging.
+"""
+
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
-
-@dataclass
-class Field(ABC):
-    shape: tuple
-    name: str
-    level: Level
-    units: str
-    component_names: list[str]
-    components: int | None = None
-    field: Array | None = None
-
-    def __post_init__(self):
-        self.components = len(self.component_names)
-        self.field = jnp.zeros(self.shape + (self.components,))
-
-    @abstractmethod
-    def plot(self, fig: plt.Figure, ax: plt.Axes):
-        pass
+from definitions import Level
+from jax import Array
 
 
-class Field2D(Field):
-    def __init__(self, name: str, X: int, Y: int, level: Level, units: str, component_names: list[str]):
-        super().__init__(
-            shape=(X, Y),
-            name=name,
-            units=units,
-            level=level,
-            component_names=component_names
+class Field:
+    """Container for JAX arrays with metadata for visualization and diagnostics.
+
+    A single class that works for both 2D and 3D fields (and even 1D).
+    The dimensionality is inferred from the shape, not encoded in the class hierarchy.
+
+    Attributes:
+        name: Human-readable identifier (e.g., "rho", "u_x")
+        level: Physical abstraction level (macroscopic/microscopic)
+        units: SI or lattice units for the field
+        component_names: Names of vector/tensor components if applicable
+        shape: Shape of the underlying array (excluding component dimension)
+        field: The actual JAX array backing this field
+    """
+
+    def __init__(
+        self,
+        name: str,
+        level: Level,
+        units: str,
+        component_names: list[str],
+        shape: tuple[int, ...],
+    ):
+
+        self.name = name
+        self.level = level
+        self.units = units
+        self.component_names = component_names
+
+        # Infer dimensions from shape (X, Y) or (X, Y, Z)
+        if len(shape) == 2:
+            self.X, self.Y = shape[0], shape[1]
+            self.Z = None
+        elif len(shape) == 3:
+            self.X, self.Y, self.Z = shape[0], shape[1], shape[2]
+        else:
+            raise ValueError(f"Unsupported field dimensions: {len(shape)}D")
+
+        # Number of components (vector/tensor vs scalar)
+        self.components = len(component_names) if component_names else 1
+
+        # Initialize the field array with zeros
+        full_shape = shape + (self.components,) if self.components > 1 else shape
+        self.field: Array = jnp.zeros(full_shape)
+
+    @property
+    def is_vector(self) -> bool:
+        """Whether this field has multiple components."""
+        return self.components > 1
+
+    @property
+    def dimensionality(self) -> int:
+        """Return the spatial dimension (2 or 3)."""
+        if self.Z is not None and self.Z > 0:
+            return 3
+        elif self.Y is not None and self.Y > 0:
+            return 2
+        else:
+            raise ValueError("Cannot determine dimensionality")
+
+    def __repr__(self):
+        dim_str = f"{self.dimensionality}D" if self.Z else "2D"
+        component_str = (
+            f" ({', '.join(self.component_names)})" if self.is_vector else ""
         )
-        X: int = X
-        Y: int = Y
-
-
-    def plot(self, fig: plt.Figure, axes: plt.Axes):
-        assert len(axes) >= self.components+1, f"Number of axes must be greater than or equal to number of components+1 ({len(axes)} vs {self.components+1})"
-        image = axes[0].imshow(jnp.linalg.norm(self.field, axis=-1))
-        cbar = fig.colorbar(image, ax=axes[0], label=self.units)
-        axes[0].set_title(f"Field: {self.name} {self.level.name} Norm")
-
-        for i, (ax, component_name) in enumerate(zip(axes[1:], self.component_names)):
-            image = ax.imshow(self.field[..., i])
-            cbar = fig.colorbar(image, ax=ax, label=self.units)
-            ax.set_title(f"{self.level.name} Field: {self.name}.{component_name} Component")
+        return f"<Field {self.name}: Level={self.level.value}, Units={self.units}, {dim_str}{component_str}>"
