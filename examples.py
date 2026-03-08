@@ -27,7 +27,7 @@ def main():
         t_max=float(steps) * 0.1,
         distributions=(dist_f,),
         plot_enabled=True,
-        plot_interval=max(1, steps // 25),
+        plot_interval=5,
         plot_output_dir=Path.cwd(),
         plot_frame_dir="/tmp/lbm_frames",
         plot_fields=("rho", "u"),

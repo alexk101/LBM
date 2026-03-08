@@ -18,6 +18,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from .boundaries import BoundarySpec, apply_boundaries
+from .collision import BGKCollision, CollisionScheme
 from .definitions import DTYPE, DTYPE_LOW, Level, LBMState, PLOT_DPI, TAU_MIN
 from .distributions import (
     Distribution,
@@ -50,6 +51,7 @@ class LBMSolver(eqx.Module):
     dt: float
     t_max: float | None
     distributions: tuple[Distribution, ...]  # ordered: e.g. (momentum, thermal)
+    collision: CollisionScheme = eqx.field(default_factory=BGKCollision)
     boundary_spec: BoundarySpec | None = None  # None = all periodic (default)
 
     # Mixed precision: when True, state (f, rho, u, T) is stored in bf16 between steps;
@@ -186,9 +188,7 @@ class LBMSolver(eqx.Module):
         new_state: LBMState = {}
         for dist in self.distributions:
             f = state_f32[dist.label]
-            f_eq = dist.equilibrium(macro, self.lattice)
-            omega = 1.0 / dist.relaxation_time()
-            f_star = f + omega * (f_eq - f)
+            f_star = self.collision.collide(f, macro, dist, self.lattice)
             f_streamed = self._stream(f_star)
             if self.boundary_spec is not None:
                 f_streamed = apply_boundaries(

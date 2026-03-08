@@ -15,8 +15,9 @@ from abc import abstractmethod
 import equinox as eqx
 import jax.numpy as jnp
 from jax import Array
-from .lattice import Lattice
 from .definitions import MacroState
+from .equilibrium import EquilibriumModel
+from .lattice import Lattice
 
 
 class Distribution(eqx.Module):
@@ -88,13 +89,14 @@ class ParticleDistribution(Distribution):
 
     Physics:
         - BGK collision: f_i(x + e_i*dt, t+dt) = f_i(x,t) - ω(f_i - f_i^eq)
-        - Equilibrium: Maxwell-Boltzmann expansion to second order
+        - Equilibrium: Maxwell-Boltzmann expansion to second order (or swap via equilibrium_model)
         - Viscosity: ν = c_s²(τ - 0.5), where τ is relaxation time
 
     Parameters:
         name: Identifier for this distribution (default: "Particle")
         label: Symbolic label used in output fields (default: "F")
         tau: Relaxation time parameter controlling viscosity (default: 0.5)
+        equilibrium_model: How to compute f_eq; None = built-in polynomial (default).
 
     Stability Notes:
         - τ must be > 0.5 for numerical stability (positive viscosity)
@@ -105,15 +107,18 @@ class ParticleDistribution(Distribution):
     name: str = "Particle"
     label: str = "F"
     tau: float = 0.5
+    equilibrium_model: EquilibriumModel | None = None
 
     def relaxation_time(self) -> float:
         return self.tau
 
     def equilibrium(self, macro: MacroState, lattice: Lattice) -> Array:
-        """Maxwell-Boltzmann equilibrium (second-order expansion)."""
+        """Equilibrium from equilibrium_model if set, else built-in polynomial."""
+        if self.equilibrium_model is not None:
+            return self.equilibrium_model.compute(macro, lattice)
+        # Built-in polynomial (same as PolynomialEquilibrium) for backward compatibility
         rho = macro["rho"]
         u = macro["u"]
-        # Support (..., 1) or (...,) for rho
         if rho.ndim >= 1 and rho.shape[-1] == 1:
             rho = jnp.squeeze(rho, axis=-1)
         e_dot_u = jnp.einsum("...c,dc->...d", u, lattice.velocities)
