@@ -1,11 +1,30 @@
 from enum import Enum
 
+import jax.numpy as jnp
+from jax import Array
+
+# Type for shared macroscopic state: ρ, u, T, etc. (keys are field names)
+MacroState = dict[str, Array]
+
+# State is a flat dict: distribution arrays keyed by dist.label, plus macro keys
+LBMState = dict[str, Array]
 
 class Level(Enum):
     """Field level indicates the physical abstraction layer."""
 
     MACROSCOPIC = "macroscopic"  # Density, velocity, temperature
     MICROSCOPIC = "microscopic"  # Distribution functions f_i
+
+
+# Plotting (resolution for saved frames and video)
+PLOT_DPI: int = 150
+
+# BGK stability: ν = c_s²(τ - 0.5) requires τ ≥ 0.5. τ < 0.5 gives negative ν and NaNs.
+TAU_MIN: float = 0.5
+
+# Precision: compute in float32; optional bf16 storage for state (see LBMSolver.use_mixed_precision)
+DTYPE = jnp.float32
+DTYPE_LOW = jnp.float32  # use only for storage of f, rho, u, T between steps
 
 
 # Physical constants

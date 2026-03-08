@@ -2,14 +2,15 @@
 # Plotting Utilities (Separate from Field class)
 # ============================================================================
 
+import numpy as np
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-from fields import Field
-from lattice import Lattice
+from .fields import Field
+from .lattice import Lattice
 from matplotlib.axes import Axes
 
 
-def plot_field(field: Field, ax=None | Axes, cmap="viridis", **kwargs):
+def plot_field(field: Field, ax: Axes | None = None, cmap="viridis", **kwargs):
     """Plot a field on the given axes.
 
     Automatically handles 2D and 3D fields with appropriate visualization.
@@ -35,33 +36,35 @@ def plot_field(field: Field, ax=None | Axes, cmap="viridis", **kwargs):
     if ax is None:
         fig, ax = plt.subplots()
 
-    # Access the raw array from field metadata
-    data = field.field
+    # cbar=False from caller means skip colorbar (e.g. in grid layout)
+    add_cbar = not kwargs.pop("cbar", False)
 
-    # Handle 2D scalar fields (most common case)
+    # Access the raw array from field metadata (may be (X,Y,1) for scalar)
+    data = np.asarray(field.field)
+    if data.ndim == 3 and data.shape[-1] == 1:
+        data = data.squeeze(-1)
+
+    # origin="upper" so row 0 at top (avoids upside-down / image convention)
     if field.dimensionality == 2 and not field.is_vector:
-        im = ax.imshow(data, origin="lower", cmap=cmap, **kwargs)
+        im = ax.imshow(data, origin="upper", cmap=cmap, **kwargs)
 
-    # Handle 2D vector fields - plot magnitude by default
     elif field.dimensionality == 2 and field.is_vector:
         magnitude = jnp.linalg.norm(data, axis=-1)
-        im = ax.imshow(magnitude, origin="lower", cmap=cmap, **kwargs)
+        im = ax.imshow(magnitude, origin="upper", cmap=cmap, **kwargs)
 
-    # Handle 3D scalar fields - show mid-plane slice
     elif field.dimensionality == 3 and not field.is_vector:
         z_mid = data.shape[0] // 2
-        im = ax.imshow(data[z_mid], origin="lower", cmap=cmap, **kwargs)
+        im = ax.imshow(data[z_mid], origin="upper", cmap=cmap, **kwargs)
 
-    # Handle 3D vector fields - show magnitude of mid-plane slice
     elif field.dimensionality == 3 and field.is_vector:
         z_mid = data.shape[0] // 2
         magnitude = jnp.linalg.norm(data[z_mid], axis=-1)
-        im = ax.imshow(magnitude, origin="lower", cmap=cmap, **kwargs)
+        im = ax.imshow(magnitude, origin="upper", cmap=cmap, **kwargs)
 
     # Add title and colorbar based on field metadata
     ax.set_title(f"{field.name} ({field.level.value})")
 
-    if not kwargs.get("cbar", False):  # Allow caller to disable colorbar
+    if add_cbar:
         cbar = plt.colorbar(im, ax=ax)
         cbar.set_label(field.units)
 
@@ -101,7 +104,7 @@ def plot_field_component(field: Field, component: int | str = 0, ax=None, **kwar
     # Access the specific component from the array
     data = field.field[..., idx] if field.is_vector else field.field
 
-    im = ax.imshow(data, origin="lower", **kwargs)
+    im = ax.imshow(data, origin="upper", **kwargs)
 
     title = (
         f"{field.name}.{field.component_names[idx]}" if field.is_vector else field.name
@@ -135,7 +138,9 @@ def plot_fields_grid(fields: list[Field], ncols: int = 3, figsize=(15, 5), **kwa
     nfields = len(fields)
     nrows = (nfields + ncols - 1) // ncols
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=figsize, constrained_layout=True
+    )
 
     if nfields == 1:
         # Single field case

@@ -1,13 +1,13 @@
-from abc import abstractmethod
-from dataclasses import dataclass
+from abc import ABC, abstractmethod
 
 import equinox as eqx
 import jax.numpy as jnp
 from jax import Array
 
 
-@dataclass(frozen=True)
-class Lattice(eqx.Module):
+class Lattice(eqx.Module, ABC):
+    """Base lattice for LBM. Use D2Q9 or D3Q19; do not mix with @dataclass."""
+
     N: int
 
     @property
@@ -22,18 +22,28 @@ class Lattice(eqx.Module):
     @abstractmethod
     def velocities(self) -> Array: ...
 
-    @eqx.field(static=True)
     @property
     def D(self) -> int:
         """Lattice spatial dimensions"""
         return self.velocities.shape[1]
 
-    @eqx.field(static=True)
     @property
-    def c_s_sq(self) -> float:
+    def c_s_sq(self) -> Array:
         """Speed of sound squared in lattice units (should always be 1/3)"""
         squared_speeds = jnp.sum(self.velocities**2, axis=1)  # (N,)
-        return (jnp.sum(self.weights[self.indices] * squared_speeds)) / self.D
+        return jnp.sum(self.weights[self.indices] * squared_speeds) / self.D
+
+    @property
+    @abstractmethod
+    def opposite_indices(self) -> Array:
+        """Index j for each i such that velocities[j] == -velocities[i]. Used for bounce-back BCs."""
+        ...
+
+    @property
+    @abstractmethod
+    def mirror_indices_per_axis(self) -> Array:
+        """For each axis dim, mirror[dim][i] = j with vel[j] = vel[i] but vel[j][dim] = -vel[i][dim]. Used for free-slip BCs. Shape (D, N)."""
+        ...
 
 
 class D2Q9(Lattice):
@@ -82,6 +92,18 @@ class D2Q9(Lattice):
                 (-1.0, -1.0),
                 (1.0, -1.0),
             ]
+        )
+
+    @property
+    def opposite_indices(self) -> Array:
+        """Index j for each i such that velocities[j] == -velocities[i]. D2Q9: 0↔0, 1↔3, 2↔4, 5↔7, 6↔8."""
+        return jnp.array([0, 3, 4, 1, 2, 7, 8, 5, 6])
+
+    @property
+    def mirror_indices_per_axis(self) -> Array:
+        """Reflect only the given axis component. D2Q9: axis 0 [0,3,2,1,4,6,5,8,7], axis 1 [0,1,4,3,2,8,7,6,5]."""
+        return jnp.array(
+            [[0, 3, 2, 1, 4, 6, 5, 8, 7], [0, 1, 4, 3, 2, 8, 7, 6, 5]]
         )
 
 
@@ -139,3 +161,22 @@ class D3Q19(Lattice):
                 ),
             ]
         )
+
+    @property
+    def opposite_indices(self) -> Array:
+        """Index j for each i such that velocities[j] == -velocities[i]. D3Q19: 1↔2, 3↔4, 5↔6; 7-9↔16-18; 10-12↔13-15."""
+        return jnp.array(
+            [0, 2, 1, 4, 3, 6, 5, 16, 17, 18, 13, 14, 15, 10, 11, 12, 7, 8, 9]
+        )
+
+    @property
+    def mirror_indices_per_axis(self) -> Array:
+        """Reflect only the given axis. D3Q19: axis 0 flips 1↔2, 5↔6, 7↔8, 9↔10, 11↔12, 13↔14, 15↔16, 17↔18; axis 1 and 2 analogous."""
+        # vel order: 0 rest; 1(1,0,0) 2(-1,0,0); 3(0,1,0) 4(0,-1,0); 5(0,0,1) 6(0,0,-1); 7..18 diagonals
+        # axis 0: 1↔2, 7↔8, 9↔10, 11↔12, 13↔14, 15↔16, 17↔18 3↔3)
+        # So axis 0: 0->0, 1->2, 2->1, 3->3, 4->4, 5->5, 6->6, then diagonals: (1,1,0)↔(-1,1,0) so 7↔8, (1,-1,0)↔(-1,-1,0) 9↔10, etc.
+        # D3Q19 secondaries from code: (1,1,0),(1,-1,0),(-1,1,0),(-1,-1,0) each x3. So 7,8,9,10 = (1,1,0),(1,-1,0),(-1,1,0),(-1,-1,0) then repeat. So 7↔8, 9↔10, 11↔12, 13↔14, 15↔16, 17↔18.
+        mirror_0 = jnp.array([0, 2, 1, 3, 4, 5, 6, 16, 17, 18, 13, 14, 15, 10, 11, 12, 7, 8, 9])
+        mirror_1 = jnp.array([0, 1, 2, 4, 3, 5, 6, 10, 11, 12, 7, 8, 9, 16, 17, 18, 13, 14, 15])
+        mirror_2 = jnp.array([0, 1, 2, 3, 4, 6, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18])
+        return jnp.stack([mirror_0, mirror_1, mirror_2])

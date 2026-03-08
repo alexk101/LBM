@@ -1,5 +1,5 @@
-from definitions import Level
-from fields import Field
+from .definitions import Level
+from .fields import Field
 
 
 def create_macroscopic_field(
