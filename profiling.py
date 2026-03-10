@@ -67,9 +67,15 @@ def main():
     jax.block_until_ready(state)
 
     # Profile one step (compilation already done; block so trace captures full execution)
-    with jax.profiler.trace("./jax-trace", create_perfetto_link=True):
-        state = solver.run(state, run_id)
+    with jax.profiler.trace("./jax-trace", create_perfetto_link=False):
+        state = solver.run(state, run_id, log_interval=5)
         jax.block_until_ready(state)
+
+    try:
+        from lbm.utils.trace_report import report_trace
+        report_trace("./jax-trace", print_report=True)
+    except Exception as e:
+        solver.logger.warning("Trace report skipped: %s", e)
 
 
 if __name__ == "__main__":

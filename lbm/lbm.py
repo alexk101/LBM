@@ -254,12 +254,11 @@ class LBMSolver(eqx.Module):
             gpu_device: GPU index to log, or None to log all GPUs (if gpu_profiler set).
         """
         t = step * self.dt
-        rho = np.asarray(state["rho"])
-        rho_sum = float(np.sum(rho))
-        u = np.asarray(state["u"])
-        u_mag = np.sqrt((u**2).sum(axis=-1))
-        u_max = float(np.max(u_mag))
-        shape = rho.shape
+        # Compute on device and transfer only scalars (avoids full state CPU copy)
+        rho_sum = float(jnp.sum(state["rho"]))
+        u_mag = jnp.linalg.norm(state["u"], axis=-1)
+        u_max = float(jnp.max(u_mag))
+        shape = state["rho"].shape
         grid_str = "x".join(str(s) for s in shape)
 
         # Simulation line: progress | grid | flow [| thermal]
@@ -271,9 +270,9 @@ class LBMSolver(eqx.Module):
         groups: list[str] = [" ".join(progress_parts), f"grid={grid_str}"]
         groups.append(f"rho_sum={rho_sum:.6f} u_max={u_max:.6f}")
         if "T" in state:
-            T_arr = np.asarray(state["T"])
+            T_arr = state["T"]
             groups.append(
-                f"T_min={float(np.min(T_arr)):.4f} T_max={float(np.max(T_arr)):.4f}"
+                f"T_min={float(jnp.min(T_arr)):.4f} T_max={float(jnp.max(T_arr)):.4f}"
             )
         self.logger.info(" | ".join(groups))
 
