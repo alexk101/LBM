@@ -1,3 +1,8 @@
+from lbm.jax_config import configure_jax
+
+# Configure JAX
+configure_jax()
+
 from lbm.lbm import LBMSolver
 from lbm.lattice import D2Q9
 from lbm.distributions import (
@@ -9,11 +14,13 @@ from lbm.definitions import MacroState, LBMState
 
 import jax.numpy as jnp
 import numpy as np
+import logging
 from pathlib import Path
 
 
 def main():
     """Run single-distribution (isothermal); plotting to file when enabled."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     X, Y = 100, 100
     distance = X // 10
     lattice = D2Q9()
@@ -50,33 +57,30 @@ def main():
         "u": macro_init["u"],
     }
 
-    print("Initial state (single-distribution):")
-    print(f"  rho sum: {float(np.sum(state['rho'])):.4f}")
-    print(f"  Plotting: enabled, interval={solver.plot_interval}, run_id={run_id}")
-
-    for i in range(steps):
-        state = solver.step(state)
-        if i % 10 == 0:
-            u_mag = (state["u"] ** 2).sum(axis=-1) ** 0.5
-            print(
-                f"Step {i}: rho_sum={float(np.sum(state['rho'])):.4f}, "
-                f"u_max={float(np.max(np.asarray(u_mag))):.6f}"
-            )
-        if solver.plot_enabled and (i % solver.plot_interval == 0 or i == steps - 1):
-            solver.plot(state, i, run_id)
-
-    print("\nFinal state:")
-    print(f"  rho sum: {float(np.sum(state['rho'])):.4f}")
+    solver.logger.info(
+        "Initial state (single-distribution): rho_sum=%.4f",
+        float(np.sum(state["rho"])),
+    )
+    solver.logger.info(
+        "Plotting: enabled, interval=%d, run_id=%s", solver.plot_interval, run_id
+    )
+    state = solver.run(state, run_id, log_interval=10)
+    solver.logger.info("Final state: rho_sum=%.4f", float(np.sum(state["rho"])))
     if solver.plot_enabled:
         try:
             video_path = solver.write_video(run_id, output_name="lbm_video.mp4", fps=10)
-            print(f"  Video saved: {video_path}")
+            solver.logger.info("Video saved: %s", video_path)
         except (ImportError, RuntimeError) as e:
-            print(f"  Frames in {Path(solver.plot_frame_dir) / run_id}; video not written: {e}")
+            solver.logger.warning(
+                "Frames in %s; video not written: %s",
+                Path(solver.plot_frame_dir) / run_id,
+                e,
+            )
 
 
 def main_thermal():
     """Coupled thermal LBM: momentum (F) + energy (G); plotting to file with rho, u, T."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     X, Y = 64, 64
     lattice = D2Q9()
     dist_f = ParticleDistribution(tau=0.6)
@@ -106,25 +110,19 @@ def main_thermal():
         "u": u_init,
         "T": T_init,
     }
-    print("Coupled thermal (F + G): initial state, plotting to file")
-    print(f"  run_id={run_id}, plot_interval={solver.plot_interval}")
-    for i in range(steps):
-        state = solver.step(state)
-        if i % 10 == 0:
-            T = state["T"]
-            print(f"Step {i}: rho_sum={float(np.sum(state['rho'])):.4f}, T_max={float(np.max(np.asarray(T))):.4f}")
-        if solver.plot_enabled and (i % solver.plot_interval == 0 or i == steps - 1):
-            solver.plot(state, i, run_id)
+    solver.logger.info("Coupled thermal (F + G): run_id=%s, plot_interval=%d", run_id, solver.plot_interval)
+    state = solver.run(state, run_id, log_interval=10)
     if solver.plot_enabled:
         try:
             video_path = solver.write_video(run_id, output_name="lbm_thermal_video.mp4", fps=8)
-            print(f"  Video saved: {video_path}")
+            solver.logger.info("Video saved: %s", video_path)
         except (ImportError, RuntimeError) as e:
-            print(f"  Frames in {Path(solver.plot_frame_dir) / run_id}; video skipped: {e}")
+            solver.logger.warning("Frames in %s; video skipped: %s", Path(solver.plot_frame_dir) / run_id, e)
 
 
 def main_boundaries():
     """Demonstrate boundary conditions: no-slip channel, then inlet/outlet (velocity + pressure)."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     X, Y = 80, 40
     lattice = D2Q9()
     dist_f = ParticleDistribution(tau=0.6)
@@ -151,7 +149,6 @@ def main_boundaries():
     )
     rho_init = jnp.ones((X, Y))[..., None]
     u_init = jnp.zeros((X, Y, 2))
-    # Slight horizontal flow to see wall effect
     u_init = u_init.at[:, :, 0].set(0.02)
     macro_init: MacroState = {"rho": rho_init, "u": u_init}
     state: LBMState = {
@@ -159,18 +156,12 @@ def main_boundaries():
         "rho": macro_init["rho"],
         "u": macro_init["u"],
     }
-    print("BC example 1: Channel (no-slip x, periodic y), initial u_x=0.02")
-    for i in range(steps):
-        state = solver.step(state)
-        if i % 20 == 0:
-            u_mag = (state["u"] ** 2).sum(axis=-1) ** 0.5
-            print(f"  Step {i}: rho_sum={float(np.sum(state['rho'])):.4f}, u_max={float(np.max(np.asarray(u_mag))):.6f}")
-        if solver.plot_enabled and (i % solver.plot_interval == 0 or i == steps - 1):
-            solver.plot(state, i, run_id)
+    solver.logger.info("BC example 1: Channel (no-slip x, periodic y), initial u_x=0.02")
+    state = solver.run(state, run_id, log_interval=20)
     if solver.plot_enabled:
         try:
             solver.write_video(run_id, output_name="lbm_bc_channel.mp4", fps=10)
-            print("  Video: lbm_bc_channel.mp4")
+            solver.logger.info("Video: lbm_bc_channel.mp4")
         except (ImportError, RuntimeError):
             pass
 
@@ -200,20 +191,14 @@ def main_boundaries():
         "rho": macro_init2["rho"],
         "u": macro_init2["u"],
     }
-    # Prescribed inlet velocity at left face: (axis=0, side=0), shape (Y, 2)
     u_inlet = jnp.zeros((Y, 2))
     u_inlet = u_inlet.at[:, 0].set(0.05)
-    print("\nBC example 2: Inlet (velocity u_x=0.05) + outlet (outflow)")
-    for i in range(steps):
-        state2 = solver2.step(state2, boundary_velocity={(0, 0): u_inlet})
-        if i % 20 == 0:
-            print(f"  Step {i}: rho_sum={float(np.sum(state2['rho'])):.4f}")
-        if solver2.plot_enabled and (i % solver2.plot_interval == 0 or i == steps - 1):
-            solver2.plot(state2, i, run_id2)
+    solver2.logger.info("BC example 2: Inlet (velocity u_x=0.05) + outlet (outflow)")
+    state2 = solver2.run(state2, run_id2, log_interval=20, boundary_velocity={(0, 0): u_inlet})
     if solver2.plot_enabled:
         try:
             solver2.write_video(run_id2, output_name="lbm_bc_inlet_outlet.mp4", fps=10)
-            print("  Video: lbm_bc_inlet_outlet.mp4")
+            solver2.logger.info("Video: lbm_bc_inlet_outlet.mp4")
         except (ImportError, RuntimeError):
             pass
 
@@ -241,24 +226,21 @@ def main_boundaries():
         "u": macro_init2["u"],
     }
     rho_outlet = jnp.ones((Y, 1)) * 0.98
-    print("\nBC example 3: Inlet (velocity) + outlet (pressure rho=0.98)")
-    for i in range(steps):
-        state3 = solver3.step(
-            state3,
-            boundary_velocity={(0, 0): u_inlet},
-            boundary_pressure={(0, 1): rho_outlet},
-        )
-        if i % 20 == 0:
-            print(f"  Step {i}: rho_sum={float(np.sum(state3['rho'])):.4f}")
-        if solver3.plot_enabled and (i % solver3.plot_interval == 0 or i == steps - 1):
-            solver3.plot(state3, i, run_id3)
+    solver3.logger.info("BC example 3: Inlet (velocity) + outlet (pressure rho=0.98)")
+    state3 = solver3.run(
+        state3,
+        run_id3,
+        log_interval=20,
+        boundary_velocity={(0, 0): u_inlet},
+        boundary_pressure={(0, 1): rho_outlet},
+    )
     if solver3.plot_enabled:
         try:
             solver3.write_video(run_id3, output_name="lbm_bc_pressure_outlet.mp4", fps=10)
-            print("  Video: lbm_bc_pressure_outlet.mp4")
+            solver3.logger.info("Video: lbm_bc_pressure_outlet.mp4")
         except (ImportError, RuntimeError):
             pass
-    print("Boundary-condition examples done.")
+    solver3.logger.info("Boundary-condition examples done.")
 
 
 if __name__ == "__main__":

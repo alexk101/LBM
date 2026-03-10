@@ -28,6 +28,9 @@ from .fields import Field
 from jax import Array
 from .lattice import Lattice
 from .plotting import plot_fields_grid
+import logging
+
+from .utils.profiling import GPUProfiler, get_profiler
 
 
 class LBMSolver(eqx.Module):
@@ -45,6 +48,17 @@ class LBMSolver(eqx.Module):
         - Call solver.plot(state, step, run_id) at each interval.
         - Call solver.write_video(run_id) after the run to stitch frames into a video
           in plot_output_dir.
+
+    Logging and GPU profiling:
+        - logger and gpu_profiler are static fields: they are not traced by JAX, so
+          Equinox and jit/vmap work unchanged. Use them in your Python run loop
+          (e.g. after each solver.step()), not inside step(). Pass gpu_profiler=get_profiler()
+          from lbm.utils.profiling to enable GPU metrics (optional; default None).
+          Use run() to execute the simulation with logging and plotting in one call:
+            from lbm.utils.profiling import get_profiler
+            solver = LBMSolver(..., gpu_profiler=get_profiler())
+            state = solver.run(state, run_id, log_interval=10)
+          Or loop manually and call solver.log(step, state, run_id=run_id) when needed.
     """
 
     lattice: Lattice
@@ -64,6 +78,14 @@ class LBMSolver(eqx.Module):
     plot_output_dir: str = "."
     plot_frame_dir: str = "/tmp/lbm_frames"
     plot_fields: tuple[str, ...] = ("rho", "u")  # macro keys to plot (add "T" for thermal)
+
+    # Logging and GPU profiling: static (not traced). Use in the run loop, not inside step().
+    logger: logging.Logger = eqx.field(
+        default_factory=lambda: logging.getLogger("lbm"), static=True
+    )
+    gpu_profiler: GPUProfiler = eqx.field(
+        default_factory=lambda: get_profiler(), static=True
+    )
 
     steps: int | None = eqx.field(init=False)
 
@@ -209,6 +231,97 @@ class LBMSolver(eqx.Module):
         if self.use_mixed_precision:
             new_state = {k: jnp.asarray(v, dtype=DTYPE_LOW) for k, v in new_state.items()}
         return new_state
+
+    def log(
+        self,
+        step: int,
+        state: LBMState,
+        *,
+        run_id: str | None = None,
+        gpu_device: int | None = None,
+    ) -> None:
+        """Log simulation state and optional GPU metrics.
+
+        Simulation info is logged on one line, grouped as progress | grid | flow [| thermal].
+        GPU info is logged on a separate line when gpu_profiler is set.
+
+        Call from the run loop after solver.step(), e.g. when step % log_interval == 0.
+
+        Args:
+            step: Current step index.
+            state: Current LBM state (dict with 'rho', 'u', optionally 'T', and distribution keys).
+            run_id: Optional run identifier to include in the log line.
+            gpu_device: GPU index to log, or None to log all GPUs (if gpu_profiler set).
+        """
+        t = step * self.dt
+        rho = np.asarray(state["rho"])
+        rho_sum = float(np.sum(rho))
+        u = np.asarray(state["u"])
+        u_mag = np.sqrt((u**2).sum(axis=-1))
+        u_max = float(np.max(u_mag))
+        shape = rho.shape
+        grid_str = "x".join(str(s) for s in shape)
+
+        # Simulation line: progress | grid | flow [| thermal]
+        progress_parts: list[str] = [f"step={step}", f"t={t:.4f}"]
+        if self.steps is not None:
+            progress_parts.append(f"total_steps={self.steps}")
+        if run_id is not None:
+            progress_parts.append(f"run_id={run_id}")
+        groups: list[str] = [" ".join(progress_parts), f"grid={grid_str}"]
+        groups.append(f"rho_sum={rho_sum:.6f} u_max={u_max:.6f}")
+        if "T" in state:
+            T_arr = np.asarray(state["T"])
+            groups.append(
+                f"T_min={float(np.min(T_arr)):.4f} T_max={float(np.max(T_arr)):.4f}"
+            )
+        self.logger.info(" | ".join(groups))
+
+        if self.gpu_profiler is not None:
+            self.logger.info(self.gpu_profiler.log(device=gpu_device))
+
+    def run(
+        self,
+        state: LBMState,
+        run_id: str,
+        *,
+        log_interval: int = 1,
+        boundary_velocity: dict[tuple[int, int], Array] | None = None,
+        boundary_pressure: dict[tuple[int, int], Array] | None = None,
+    ) -> LBMState:
+        """Run the simulation from initial state, logging and plotting at configured intervals.
+
+        Integrates step(), log(), and plot() in one loop. Use this for standard runs
+        instead of manually looping over solver.step().
+
+        Args:
+            state: Initial LBM state.
+            run_id: Run identifier for logging and for plot frame directory.
+            log_interval: Log every this many steps (simulation + GPU lines).
+            boundary_velocity: Optional dict passed to step() each time (e.g. inlet BC).
+            boundary_pressure: Optional dict passed to step() each time (e.g. outlet BC).
+
+        Returns:
+            Final state after self.steps steps.
+
+        Raises:
+            ValueError: If self.steps is None (t_max or dt not set).
+        """
+        if self.steps is None:
+            raise ValueError("run() requires t_max and dt to be set so steps is defined")
+        for step in range(self.steps):
+            state = self.step(
+                state,
+                boundary_velocity=boundary_velocity,
+                boundary_pressure=boundary_pressure,
+            )
+            if log_interval > 0 and step % log_interval == 0:
+                self.log(step, state, run_id=run_id)
+            if self.plot_enabled and (
+                step % self.plot_interval == 0 or step == self.steps - 1
+            ):
+                self.plot(state, step, run_id)
+        return state
 
     @eqx.filter_jit
     def _stream(self, f: Array) -> Array:
