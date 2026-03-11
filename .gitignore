@@ -7,6 +7,7 @@ wheels/
 *.egg-info
 .python-version
 uv.lock
+plots
 *.mp4
 
 # Virtual environments

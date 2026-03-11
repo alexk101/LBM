@@ -3,24 +3,27 @@ name = "LBM"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.13"
 dependencies = [
     "equinox>=0.13.5",
     "grain>=0.2.14",
     "ipykernel>=7.1.0",
     "ipywidgets>=8.1.8",
-    "jax[cuda12]>=0.8.0",
+    "jax>=0.8.0",
     "jupyter>=1.1.1",
     "jupyterlab>=4.4.10",
     "numpy>=2.3.4",
     "optimistix>=0.1.0",
     "seaborn>=0.13.2",
-    "tqdm>=4.67.1",
 ]
 
 [dependency-groups]
 nvidia = [
     "nvidia-ml-py>=13.590.48",
+]
+apple = [
+    # "jax-mps>=0.9.6",
+    "apple-gpu>=0.3.1",
 ]
 profiling = [
     "perfetto>=0.16.0",
