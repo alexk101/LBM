@@ -1,0 +1,4 @@
+type: compressible
+Pr: 0.71
+gamma: 1.4
+viscosity: 0.01

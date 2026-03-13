@@ -7,7 +7,10 @@ wheels/
 *.egg-info
 .python-version
 uv.lock
+plots
 *.mp4
+jax-trace
+outputs
 
 # Virtual environments
 .venv

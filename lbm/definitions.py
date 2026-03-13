@@ -1,13 +1,65 @@
+from __future__ import annotations
+
 from enum import Enum
 
+import equinox as eqx
 import jax.numpy as jnp
 from jax import Array
 
-# Type for shared macroscopic state: ρ, u, T, etc. (keys are field names)
+# Internal type for macro fields passed to equilibrium models.
+# Kept as a plain dict so equilibrium models don't need to depend on LBMState.
 MacroState = dict[str, Array]
 
-# State is a flat dict: distribution arrays keyed by dist.label, plus macro keys
-LBMState = dict[str, Array]
+
+class LBMState(eqx.Module):
+    """Full simulation state as a JAX pytree.
+
+    Typed fields give IDE autocompletion and catch key errors at construction.
+    Because this is an eqx.Module, jax.grad / jax.tree.map / jax.lax.fori_loop
+    all work out of the box.
+
+    Attributes:
+        rho: Density field, shape (..., 1).
+        u: Velocity field, shape (..., D).
+        T: Temperature field, shape (..., 1), or None for athermal simulations.
+        dists: Distribution arrays keyed by label (e.g. {"F": ..., "G": ...}).
+    """
+
+    rho: Array
+    u: Array
+    T: Array | None = None
+    dists: dict[str, Array] = eqx.field(default_factory=dict)
+
+    @property
+    def macro(self) -> MacroState:
+        """Extract macro dict for equilibrium / collision computation."""
+        m: MacroState = {"rho": self.rho, "u": self.u}
+        if self.T is not None:
+            m["T"] = self.T
+        return m
+
+    # --- dict-like access for plotting / logging code ---
+
+    def __getitem__(self, key: str) -> Array:
+        if key == "rho":
+            return self.rho
+        if key == "u":
+            return self.u
+        if key == "T":
+            if self.T is None:
+                raise KeyError("T")
+            return self.T
+        if key in self.dists:
+            return self.dists[key]
+        raise KeyError(key)
+
+    def __contains__(self, key: str) -> bool:
+        if key in ("rho", "u"):
+            return True
+        if key == "T":
+            return self.T is not None
+        return key in self.dists
+
 
 class Level(Enum):
     """Field level indicates the physical abstraction layer."""
@@ -16,36 +68,10 @@ class Level(Enum):
     MICROSCOPIC = "microscopic"  # Distribution functions f_i
 
 
-# Plotting (resolution for saved frames and video)
 PLOT_DPI: int = 150
-
-# BGK stability: ν = c_s²(τ - 0.5) requires τ ≥ 0.5. τ < 0.5 gives negative ν and NaNs.
 TAU_MIN: float = 0.5
 
-# Precision: compute in float32; optional bf16 storage for state (see LBMSolver.use_mixed_precision)
 DTYPE = jnp.float32
-DTYPE_LOW = jnp.float32  # use only for storage of f, rho, u, T between steps
+DTYPE_LOW = jnp.float32
 
-
-# Physical constants
 R = 8.31446261  # J/(mol*K)
-
-# The boltzmann BGK equation for conserved mass and energy:
-# $D$ = dimension
-# $Q$ = number of directions
-# $R$ = gas constant (molar Boltzmann constant) = $8.31446261$ J/(mol*K)
-# $c$ = speed of sound = $\sqrt{\gamma R_{*} T}$
-# $c_s$ = speed of sound in given medium s
-# $\gamma$ = heat capacity ratio / adiabatic index = 1.4 (room temperature, dry air)
-# $R_{*}$ = gas constant for dry air = $R / M_{air}$
-# $M_{air}$ = molar mass of dry air in = $0.0289644$ kg/mol
-# $\tau$ = time relaxation constant
-# $\nu$ = fluid viscosity = $\left(\tau - \frac{1}{2}\right) c_s^2$
-
-# Macroscopic variables:
-# $\rho$ = density
-# $\vec{u}$ = velocity
-# $T$ = absolute temperature
-
-# Microscopic variables:
-# $\vec{e}$ = velocity

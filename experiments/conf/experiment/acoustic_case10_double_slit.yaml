@@ -1,0 +1,66 @@
+# @package _global_
+# Acoustic case 10: double slit
+# Reference: kinet/experiments/acoustic/case10_double_slit
+
+defaults:
+  - override /solver: acoustic
+  - override /equilibrium: entropic
+  - override /lattice: d2q9
+
+experiment:
+  name: acoustic_case10_double_slit
+  initial_conditions: acoustic_uniform
+  spatial_shape: [300, 600]
+  dt: 1.0
+  t_max: 5000.0
+  log_interval: 100
+  save_interval: 50
+  plot_interval: 200
+  plot_fields: [rho, u]
+  output_variables: [rho, u]
+  obstacles:
+    - type: rigid_wall
+      axis: 1
+      position: 200
+      start: 0
+      end: 99
+    - type: rigid_wall
+      axis: 1
+      position: 200
+      start: 115
+      end: 202
+    - type: rigid_wall
+      axis: 1
+      position: 200
+      start: 218
+      end: 300
+  sources:
+    - kind: monopole
+      position: [150, 150]
+      amplitude: 0.02
+      frequency: 0.242
+
+solver:
+  rho_0: 1.0
+  tau: 0.501
+
+boundary:
+  x:
+    low: periodic
+    high: periodic
+  y:
+    low: periodic
+    high: periodic
+  absorbing:
+    x_low:
+      width: 30
+      sigma_max: 0.3
+    x_high:
+      width: 30
+      sigma_max: 0.3
+    y_low:
+      width: 30
+      sigma_max: 0.3
+    y_high:
+      width: 30
+      sigma_max: 0.3

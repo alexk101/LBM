@@ -1,0 +1,49 @@
+# @package _global_
+# Flow around cylinder — compressible (supersonic with lattice shifts)
+# Reference: kinet/experiments/flow_around_objects/cylinder
+
+defaults:
+  - override /solver: compressible
+  - override /equilibrium: extended
+  - override /lattice: d2q9
+
+lattice:
+  shifts: [0.4, 0.0]
+
+experiment:
+  name: cylinder_compressible
+  initial_conditions: cylinder_compressible
+  spatial_shape: [400, 200]
+  dt: 1.0
+  t_max: 10000.0
+  log_interval: 100
+  save_interval: 50
+  plot_interval: 200
+  plot_fields: [rho, u]
+  output_variables: [rho, u, T]
+  obstacles:
+    - type: cylinder
+      center: [100, 100]
+      radius: 15
+  sources: []
+  Ma0: 1.8
+  rho0: 1.0
+  T0: 0.2
+
+solver:
+  Pr: 0.71
+  gamma: 1.4
+  # kinet uses 0.0001 with neurDE stabilization (learned collision operator).
+  # Plain BGK with obstacle bounce-back and lattice shifts needs much more
+  # dissipation to stay stable. Restore 0.0001 once neurDE is integrated.
+  viscosity: 0.05
+
+boundary:
+  x:
+    low: velocity
+    high: outflow
+  y:
+    low: free_slip
+    high: free_slip
+  velocity:
+    x_low: [0.4, 0.0]

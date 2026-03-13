@@ -1,0 +1,45 @@
+# @package _global_
+# SOD shock tube — transonic Riemann problem
+# Reference: kinet/experiments/sod/transonic
+
+defaults:
+  - override /solver: compressible
+  - override /equilibrium: extended
+  - override /lattice: d2q9
+
+lattice:
+  shifts: [0.4, 0.0]
+
+experiment:
+  name: sod_transonic
+  initial_conditions: sod_transonic
+  spatial_shape: [3001, 5]
+  dt: 1.0
+  t_max: 500.0
+  log_interval: 50
+  save_interval: 10
+  plot_interval: 50
+  plot_fields: [rho, u]
+  output_variables: [rho, u, T]
+  obstacles: []
+  sources: []
+  rho_L: 1.0
+  rho_R: 0.125
+  T_L: 0.2
+  T_R: 0.16
+
+solver:
+  Pr: 0.71
+  gamma: 1.4
+  # kinet uses 0.0001 with neurDE entropic stabilization.
+  # Plain BGK needs more dissipation for the transonic shock.
+  # Restore 0.0001 once the learned collision operator is integrated.
+  viscosity: 0.05
+
+boundary:
+  x:
+    low: outflow
+    high: outflow
+  y:
+    low: outflow
+    high: outflow

@@ -1,0 +1,7 @@
+type: shallow_water
+gravity: 0.01
+height_0: 1.0
+Fr: null
+Re: 100.0
+char_length: null
+gravity_axis: 1

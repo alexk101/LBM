@@ -1,0 +1,55 @@
+# @package _global_
+# Acoustic case 12: flow past cylinder with acoustic source
+# Reference: kinet/experiments/acoustic/case12_flow_cylinder
+
+defaults:
+  - override /solver: acoustic
+  - override /equilibrium: entropic
+  - override /lattice: d2q9
+
+experiment:
+  name: acoustic_case12_flow_cylinder
+  initial_conditions: acoustic_uniform
+  spatial_shape: [500, 240]
+  dt: 1.0
+  t_max: 10000.0
+  log_interval: 100
+  save_interval: 50
+  plot_interval: 200
+  plot_fields: [rho, u]
+  output_variables: [rho, u]
+  obstacles:
+    - type: cylinder
+      center: [100, 120]
+      radius: 10
+  sources:
+    - kind: dipole
+      position: [400, 40]
+      amplitude: 0.45
+      frequency: 0.453
+      direction: [0.0, 1.0]
+
+solver:
+  rho_0: 1.0
+  tau: 0.501
+
+boundary:
+  x:
+    low: periodic
+    high: periodic
+  y:
+    low: periodic
+    high: periodic
+  absorbing:
+    x_low:
+      width: 30
+      sigma_max: 0.3
+    x_high:
+      width: 30
+      sigma_max: 0.3
+    y_low:
+      width: 30
+      sigma_max: 0.3
+    y_high:
+      width: 30
+      sigma_max: 0.3

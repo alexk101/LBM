@@ -30,10 +30,10 @@ def _find_trace_in_dir(log_dir: Path) -> Path | None:
     for run_dir in runs:
         if not run_dir.is_dir():
             continue
-        trace_path = run_dir / "perfetto_trace.json.gz"
+        trace_path = list(run_dir.glob("*.json.gz"))[0]
         if trace_path.is_file():
             return trace_path
-    return None
+    return None 
 
 
 def resolve_trace_path(path: str | Path) -> Path:

@@ -1,0 +1,38 @@
+# @package _global_
+# Double shear layer (doubly periodic)
+# Reference: kinet/experiments/doubly_periodic/Re-50k_Ma-1en1_l-80_eps-5en2_r0-1
+
+defaults:
+  - override /solver: isothermal
+  - override /equilibrium: entropic
+  - override /lattice: d2q9
+
+experiment:
+  name: double_shear_layer
+  initial_conditions: double_shear_layer
+  spatial_shape: [512, 512]
+  dt: 1.0
+  t_max: 10000.0
+  log_interval: 100
+  save_interval: 50
+  plot_interval: 200
+  plot_fields: [rho, u]
+  output_variables: [rho, u]
+  obstacles: []
+  sources: []
+  lam: 80.0
+  epsilon: 0.05
+  rho0: 1.0
+
+solver:
+  Re: 50000.0
+  Ma: 0.1
+  char_length: 512.0
+
+boundary:
+  x:
+    low: periodic
+    high: periodic
+  y:
+    low: periodic
+    high: periodic

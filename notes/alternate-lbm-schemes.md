@@ -1,12 +1,12 @@
 # Alternate LBM schemes: polynomial, entropic, Levermore, extended, MRT, TRT, central-moment, regularized
 
-This note explains different ways to define the **equilibrium distribution** and/or the **collision** step in the lattice Boltzmann method. Sections 1–4 focus on **equilibrium** choices; sections 5–8 on **collision** or **formulation** variants (same polynomial equilibrium, different relaxation or space). Each choice has different trade-offs in accuracy, stability, and range of applicability (e.g. incompressible vs compressible, low vs high Mach).
+This note explains different ways to define the **equilibrium distribution** and/or the **collision** step in the lattice Boltzmann method. Sections 1-4 focus on **equilibrium** choices; sections 5-8 on **collision** or **formulation** variants (same polynomial equilibrium, different relaxation or space). Each choice has different trade-offs in accuracy, stability, and range of applicability (e.g. incompressible vs compressible, low vs high Mach).
 
 ---
 
 ## 1. Polynomial equilibrium (what we have)
 
-**Idea:** The continuous Maxwell–Boltzmann distribution is expanded in small Mach number and evaluated on the discrete velocities via the lattice weights (Gauss–Hermite quadrature). The result is a **polynomial in u**.
+**Idea:** The continuous Maxwell-Boltzmann distribution is expanded in small Mach number and evaluated on the discrete velocities via the lattice weights (Gauss-Hermite quadrature). The result is a **polynomial in u**.
 
 For D2Q9 with sound speed squared $c_s^2 = 1/3$, the standard form is:
 
@@ -21,7 +21,7 @@ $$
 **Pros:**
 
 - Simple, explicit, cheap.
-- Correct low-Mach Navier–Stokes limit (mass, momentum, stress) when used with BGK and appropriate $\tau$.
+- Correct low-Mach Navier-Stokes limit (mass, momentum, stress) when used with BGK and appropriate $\tau$.
 - Well understood and widely used.
 
 **Cons:**
@@ -32,7 +32,7 @@ $$
 
 **In this codebase:** `ParticleDistribution.equilibrium` in `lbm/distributions.py` implements this second-order polynomial equilibrium.
 
-**Citation:** Bhatnagar, P.L., Gross, E.P., Krook, M. (1954). A model for collision processes in gases. I. Small amplitude processes in charged and neutral one-component systems. *Physical Review* **94**, 511–525. DOI: 10.1103/PhysRev.94.511. (BGK collision.) For the lattice Boltzmann formulation with this equilibrium: Krüger, T., Kusumaatmaja, H., Kuzmin, A., Shardt, O., Silva, G., Viggen, E.M. (2017). *The Lattice Boltzmann Method*. Springer. Chapter 2.
+**Citation:** Bhatnagar, P.L., Gross, E.P., Krook, M. (1954). A model for collision processes in gases. I. Small amplitude processes in charged and neutral one-component systems. *Physical Review* **94**, 511-525. DOI: 10.1103/PhysRev.94.511. (BGK collision.) For the lattice Boltzmann formulation with this equilibrium: Krüger, T., Kusumaatmaja, H., Kuzmin, A., Shardt, O., Silva, G., Viggen, E.M. (2017). *The Lattice Boltzmann Method*. Springer. Chapter 2.
 
 ---
 
@@ -59,7 +59,7 @@ So:
 
 **Typical use:** Compressible flows, high Mach, stability-sensitive setups; also used in athermal and thermal LBMs when robustness is prioritized.
 
-**Citations:** Ansumali, S., Karlin, I.V., Öttinger, H.C. (2003). Minimal entropic kinetic models for hydrodynamics. *Europhysics Letters* **63**, 798–804. Karlin, I.V., Ansumali, S., De Angelis, E., Öttinger, H.C., Succi, S. (2003). Entropic lattice Boltzmann method for large scale turbulence simulation. *International Journal of Modern Physics C* **14**, 1111–1123.
+**Citations:** Ansumali, S., Karlin, I.V., Öttinger, H.C. (2003). Minimal entropic kinetic models for hydrodynamics. *Europhysics Letters* **63**, 798-804. Karlin, I.V., Ansumali, S., De Angelis, E., Öttinger, H.C., Succi, S. (2003). Entropic lattice Boltzmann method for large scale turbulence simulation. *International Journal of Modern Physics C* **14**, 1111-1123.
 
 ---
 
@@ -74,7 +74,7 @@ In LBM terms:
 
 **Pros:**
 
-- Theoretically grounded in kinetic theory; can improve consistency with Euler/Navier–Stokes (e.g. stress tensor, Galilean invariance) when going beyond the simplest polynomial.
+- Theoretically grounded in kinetic theory; can improve consistency with Euler/Navier-Stokes (e.g. stress tensor, Galilean invariance) when going beyond the simplest polynomial.
 - Can be designed to preserve **hyperbolicity** and **entropy** in the moment system.
 
 **Cons:**
@@ -84,7 +84,7 @@ In LBM terms:
 
 **Typical use:** When you want better moment consistency (e.g. for compressible or higher-Mach flows) while staying in a moment/BGK-like framework.
 
-**Citation:** Levermore, C.D. (1996). Moment closure hierarchies for kinetic theories. *Journal of Statistical Physics* **83**, 1021–1065. DOI: 10.1007/BF02179552.
+**Citation:** Levermore, C.D. (1996). Moment closure hierarchies for kinetic theories. *Journal of Statistical Physics* **83**, 1021-1065. DOI: 10.1007/BF02179552.
 
 ---
 
@@ -94,20 +94,20 @@ In LBM terms:
 
 So:
 
-- **Extended equilibrium:** $f^{\mathrm{eq}}$ has the usual polynomial part **plus** correction terms so that, when you take moments, you get the right stress, energy, etc. for compressible Navier–Stokes (or Euler).
+- **Extended equilibrium:** $f^{\mathrm{eq}}$ has the usual polynomial part **plus** correction terms so that, when you take moments, you get the right stress, energy, etc. for compressible Navier-Stokes (or Euler).
 - **Extended Levermore:** Same idea but framed in the moment-closure / Levermore language: the closure is chosen so that more moments (e.g. stress, heat flux) are correct; the corresponding discrete equilibrium is the “extended” one.
 
 **Pros:**
 
 - Better **Galilean invariance** and **isotropy** of the stress tensor at finite Mach.
-- Can go toward **compressible** flow (shock tubes, shock–vortex, etc.) while still using a single- or double-population LBM on standard lattices.
+- Can go toward **compressible** flow (shock tubes, shock-vortex, etc.) while still using a single- or double-population LBM on standard lattices.
 
 **Cons:**
 
 - More algebra and coding; equilibrium is more complicated than the basic polynomial.
 - May still need additional tricks (e.g. numerical equilibria, filtering) for very strong shocks or supersonic turbulence.
 
-**Typical use:** Compressible LBM (Sod tube, shock–vortex, compressible turbulence) where the standard polynomial equilibrium is not enough.
+**Typical use:** Compressible LBM (Sod tube, shock-vortex, compressible turbulence) where the standard polynomial equilibrium is not enough.
 
 **Citations:** Saadat, M.H., Dorschner, B., Karlin, I.V. (2021). Extended lattice Boltzmann model. *Entropy* **23**, 475. Frapolli, N., Chikatamarla, S.S., Karlin, I.V. (2015). Entropic lattice Boltzmann model for compressible flows. *Physical Review E* **92**, 061301(R).
 
@@ -136,7 +136,7 @@ So:
 
 **Typical use:** Production and research codes where stability or bulk-viscosity control matter; often the default in many LBM libraries.
 
-**Citation:** d’Humières, D. (2002). Multiple-relaxation-time lattice Boltzmann models in three dimensions. *Philosophical Transactions of the Royal Society of London A* **360**, 437–451. DOI: 10.1098/rsta.2001.0955.
+**Citation:** d’Humières, D. (2002). Multiple-relaxation-time lattice Boltzmann models in three dimensions. *Philosophical Transactions of the Royal Society of London A* **360**, 437-451. DOI: 10.1098/rsta.2001.0955.
 
 ---
 
@@ -155,7 +155,7 @@ So:
 
 **Typical use:** When you want a simple upgrade from BGK without going to full MRT.
 
-**Citation:** Ginzburg, I., Verhaeghe, F., d’Humières, D. (2008). Two-relaxation-time lattice Boltzmann scheme: about parametrization, velocity, pressure and mixed boundary conditions. *Communications in Computational Physics* **3**, 427–478.
+**Citation:** Ginzburg, I., Verhaeghe, F., d’Humières, D. (2008). Two-relaxation-time lattice Boltzmann scheme: about parametrization, velocity, pressure and mixed boundary conditions. *Communications in Computational Physics* **3**, 427-478.
 
 ---
 
@@ -176,7 +176,7 @@ So:
 
 **Typical use:** When you care about Galilean invariance and stability without going to entropic or compressible models.
 
-**Citations:** Geier, M., Pasquali, A., Schönherr, M. (2017). Parametrization of the cumulant lattice Boltzmann method for fourth order accurate diffusion. Part I: derivation and validation. *Journal of Computational Physics* **348**, 862–888. Geier, M., Pasquali, A. (2018). Fourth order Galilean invariance for the lattice Boltzmann method. *Computers & Fluids* **166**, 139–145. (Central-moment LBM: e.g. Premnath, K.N., Banerjee, S. (2009). Incorporating forcing terms in the lattice Boltzmann approach. *Physical Review E* **79**, 026704.)
+**Citations:** Geier, M., Pasquali, A., Schönherr, M. (2017). Parametrization of the cumulant lattice Boltzmann method for fourth order accurate diffusion. Part I: derivation and validation. *Journal of Computational Physics* **348**, 862-888. Geier, M., Pasquali, A. (2018). Fourth order Galilean invariance for the lattice Boltzmann method. *Computers & Fluids* **166**, 139-145. (Central-moment LBM: e.g. Premnath, K.N., Banerjee, S. (2009). Incorporating forcing terms in the lattice Boltzmann approach. *Physical Review E* **79**, 026704.)
 
 ---
 
@@ -196,7 +196,7 @@ So:
 
 **Typical use:** When you want a simple stabilization and noise reduction without changing to MRT or central-moment.
 
-**Citation:** Latt, J., Chopard, B. (2006). Lattice Boltzmann method with regularized pre-collision distribution functions. *Mathematics and Computers in Simulation* **72**, 165–168. DOI: 10.1016/j.matcom.2006.05.017.
+**Citation:** Latt, J., Chopard, B. (2006). Lattice Boltzmann method with regularized pre-collision distribution functions. *Mathematics and Computers in Simulation* **72**, 165-168. DOI: 10.1016/j.matcom.2006.05.017.
 
 ---
 
@@ -217,11 +217,11 @@ So:
 
 ## References (consolidated)
 
-- **Polynomial / BGK:** Bhatnagar, P.L., Gross, E.P., Krook, M. (1954). A model for collision processes in gases. I. Small amplitude processes in charged and neutral one-component systems. *Physical Review* **94**, 511–525. DOI: 10.1103/PhysRev.94.511. — Krüger, T., Kusumaatmaja, H., Kuzmin, A., Shardt, O., Silva, G., Viggen, E.M. (2017). *The Lattice Boltzmann Method*. Springer.
-- **Entropic:** Ansumali, S., Karlin, I.V., Öttinger, H.C. (2003). Minimal entropic kinetic models for hydrodynamics. *Europhysics Letters* **63**, 798–804. — Karlin, I.V., Ansumali, S., De Angelis, E., Öttinger, H.C., Succi, S. (2003). Entropic lattice Boltzmann method for large scale turbulence simulation. *International Journal of Modern Physics C* **14**, 1111–1123.
-- **Levermore:** Levermore, C.D. (1996). Moment closure hierarchies for kinetic theories. *Journal of Statistical Physics* **83**, 1021–1065. DOI: 10.1007/BF02179552.
+- **Polynomial / BGK:** Bhatnagar, P.L., Gross, E.P., Krook, M. (1954). A model for collision processes in gases. I. Small amplitude processes in charged and neutral one-component systems. *Physical Review* **94**, 511-525. DOI: 10.1103/PhysRev.94.511. — Krüger, T., Kusumaatmaja, H., Kuzmin, A., Shardt, O., Silva, G., Viggen, E.M. (2017). *The Lattice Boltzmann Method*. Springer.
+- **Entropic:** Ansumali, S., Karlin, I.V., Öttinger, H.C. (2003). Minimal entropic kinetic models for hydrodynamics. *Europhysics Letters* **63**, 798-804. — Karlin, I.V., Ansumali, S., De Angelis, E., Öttinger, H.C., Succi, S. (2003). Entropic lattice Boltzmann method for large scale turbulence simulation. *International Journal of Modern Physics C* **14**, 1111-1123.
+- **Levermore:** Levermore, C.D. (1996). Moment closure hierarchies for kinetic theories. *Journal of Statistical Physics* **83**, 1021-1065. DOI: 10.1007/BF02179552.
 - **Extended equilibrium:** Saadat, M.H., Dorschner, B., Karlin, I.V. (2021). Extended lattice Boltzmann model. *Entropy* **23**, 475. — Frapolli, N., Chikatamarla, S.S., Karlin, I.V. (2015). Entropic lattice Boltzmann model for compressible flows. *Physical Review E* **92**, 061301(R).
-- **MRT:** d'Humières, D. (2002). Multiple-relaxation-time lattice Boltzmann models in three dimensions. *Philosophical Transactions of the Royal Society of London A* **360**, 437–451. DOI: 10.1098/rsta.2001.0955.
-- **TRT:** Ginzburg, I., Verhaeghe, F., d'Humières, D. (2008). Two-relaxation-time lattice Boltzmann scheme: about parametrization, velocity, pressure and mixed boundary conditions. *Communications in Computational Physics* **3**, 427–478.
-- **Central-moment / cumulant:** Geier, M., Pasquali, A., Schönherr, M. (2017). Parametrization of the cumulant lattice Boltzmann method for fourth order accurate diffusion. Part I: derivation and validation. *Journal of Computational Physics* **348**, 862–888. — Geier, M., Pasquali, A. (2018). Fourth order Galilean invariance for the lattice Boltzmann method. *Computers & Fluids* **166**, 139–145. — Premnath, K.N., Banerjee, S. (2009). Incorporating forcing terms in the lattice Boltzmann approach. *Physical Review E* **79**, 026704 (central-moment formulation).
-- **Regularized:** Latt, J., Chopard, B. (2006). Lattice Boltzmann method with regularized pre-collision distribution functions. *Mathematics and Computers in Simulation* **72**, 165–168. DOI: 10.1016/j.matcom.2006.05.017.
+- **MRT:** d'Humières, D. (2002). Multiple-relaxation-time lattice Boltzmann models in three dimensions. *Philosophical Transactions of the Royal Society of London A* **360**, 437-451. DOI: 10.1098/rsta.2001.0955.
+- **TRT:** Ginzburg, I., Verhaeghe, F., d'Humières, D. (2008). Two-relaxation-time lattice Boltzmann scheme: about parametrization, velocity, pressure and mixed boundary conditions. *Communications in Computational Physics* **3**, 427-478.
+- **Central-moment / cumulant:** Geier, M., Pasquali, A., Schönherr, M. (2017). Parametrization of the cumulant lattice Boltzmann method for fourth order accurate diffusion. Part I: derivation and validation. *Journal of Computational Physics* **348**, 862-888. — Geier, M., Pasquali, A. (2018). Fourth order Galilean invariance for the lattice Boltzmann method. *Computers & Fluids* **166**, 139-145. — Premnath, K.N., Banerjee, S. (2009). Incorporating forcing terms in the lattice Boltzmann approach. *Physical Review E* **79**, 026704 (central-moment formulation).
+- **Regularized:** Latt, J., Chopard, B. (2006). Lattice Boltzmann method with regularized pre-collision distribution functions. *Mathematics and Computers in Simulation* **72**, 165-168. DOI: 10.1016/j.matcom.2006.05.017.

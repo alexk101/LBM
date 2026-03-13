@@ -1,23 +1,27 @@
-# boundaries.py
 """Boundary conditions for LBM.
 
-Original Zou–He (1997, Phys. Fluids 9, 1591): boundaries are based on *bounceback of
+Zou-He (1997, Phys. Fluids 9, 1591): boundaries are based on *bounceback of
 the non-equilibrium* part of the distribution:
 
-  f_i - f_i^eq = f_opposite - f_opposite^eq   =>   f_i = f_i^eq + (f_opposite - f_opposite^eq)
+  f_i = f_i^eq(rho, u) + (f_{opp(i)} - f_{opp(i)}^eq(rho, u))
 
-So the unknown population is equilibrium at the boundary (ρ, u) plus the non-equilibrium
-of the opposite (known) population. Both velocity and pressure BCs in the paper follow
-from this plus mass/momentum consistency.
+Both velocity and pressure BCs follow from this plus mass/momentum consistency.
 
-- *Periodic*: default from jnp.roll (no op in apply_boundaries).
-- *No-slip*: full bounce-back (swap with opposite direction).
-- *Free-slip*: specular reflection (mirror direction across the wall).
-- *Velocity* (Zou–He): prescribed u; rho from mass, unknown f from non-eq bounceback.
-  Our formulas (e.g. f1 = f3 + (2/3)*ρ*u_x for west) are the D2Q9 equivalent of the above.
-- *Pressure*: prescribed ρ. Original Zou–He derives u from momentum + non-eq bounceback.
-  We use a simpler stable approximation: unknown f = f^eq(ρ, u_interior) (no non-eq part).
-- *Outflow*: zero-gradient (copy unknown from interior neighbor).
+Streaming convention (pull):  f_i(x, t+dt) = f_i*(x - e_i, t).
+After streaming at a boundary face, directions that point *into the domain
+from outside* carry invalid (wrapped) data and must be overwritten.  At
+side=0 (low face, e.g. x=0) the unknown set is ``e_i[axis] > 0``; at
+side=1 (high face) it is ``e_i[axis] < 0``.
+
+Supported BCs:
+    periodic   — handled implicitly by ``jnp.roll`` (no-op here).
+    no_slip    — full bounce-back: f_unknown = f_opposite.
+    free_slip  — specular reflection: mirror normal component.
+    outflow    — zero-gradient: copy from interior neighbor.
+    velocity   — Zou-He: prescribed u; rho from mass; f via non-eq bounceback.
+    pressure   — Zou-He: prescribed rho; u from momentum; f via non-eq bounceback.
+    absorbing  — sponge layer: damp f toward f_eq(rho₀, 0) near boundaries.
+    inlet_eq   — equilibrium inlet: set f = f_eq(rho, u) at face.
 """
 from __future__ import annotations
 
@@ -28,20 +32,19 @@ import jax.numpy as jnp
 from jax import Array
 
 from .definitions import MacroState
+from .equilibrium import PolynomialEquilibrium
 from .lattice import Lattice
 
 BoundaryKind = Literal[
-    "periodic", "no_slip", "free_slip", "velocity", "pressure", "outflow"
+    "periodic", "no_slip", "free_slip", "velocity", "pressure",
+    "outflow", "absorbing", "inlet_eq",
 ]
+
+_POLY_EQ = PolynomialEquilibrium()
 
 
 class BoundarySpec(eqx.Module):
-    """Specifies boundary type for each face of the domain.
-
-    Use get(axis, side) to look up the kind. For "velocity" and "pressure" faces,
-    pass prescribed values into apply_boundaries via boundary_velocity and
-    boundary_pressure (dicts keyed by (axis, side)).
-    """
+    """Boundary type for each face.  ``get(axis, side)`` returns the kind."""
 
     _items: tuple[tuple[int, int, str], ...] = eqx.field(static=True)
 
@@ -52,7 +55,6 @@ class BoundarySpec(eqx.Module):
         y: tuple[BoundaryKind, BoundaryKind] | None = None,
         z: tuple[BoundaryKind, BoundaryKind] | None = None,
     ) -> None:
-        """Specify BCs per axis: (low_side, high_side)."""
         items: list[tuple[int, int, str]] = []
         for axis, pair in enumerate([x, y, z]):
             if pair is None:
@@ -62,161 +64,109 @@ class BoundarySpec(eqx.Module):
         self._items = tuple(items)
 
     def get(self, axis: int, side: int) -> BoundaryKind:
-        """Return boundary kind for given axis and side (0=low, 1=high)."""
-        for (a, s, k) in self._items:
+        for a, s, k in self._items:
             if a == axis and s == side:
                 return k  # type: ignore[return-value]
         return "periodic"
 
     def has_any_non_periodic(self) -> bool:
-        """True if any face is not periodic."""
         return any(k != "periodic" for (_, _, k) in self._items)
 
     def has_no_slip(self) -> bool:
-        """True if any face uses no_slip (kept for backward compatibility)."""
         return any(k == "no_slip" for (_, _, k) in self._items)
 
 
+# ======================================================================
+# Helpers
+# ======================================================================
+
+def _wall_slice(axis: int, index: int, D: int):
+    """Indexing tuple selecting a boundary face (all directions)."""
+    sl: list[int | slice] = [slice(None)] * D
+    sl[axis] = index
+    return tuple(sl) + (slice(None),)
+
+
+def _unknown_mask(lattice: Lattice, axis: int, side: int) -> Array:
+    """Boolean mask (N,) — True for directions that are unknown at this face.
+
+    With standard pull streaming, at side 0 the unknown directions have
+    e_i[axis] > 0 (streamed from outside), and at side 1 they have
+    e_i[axis] < 0.
+    """
+    vel = lattice.velocities[:, axis]
+    return vel > 0 if side == 0 else vel < 0
+
+
+def _f_eq(rho: Array, u: Array, lattice: Lattice) -> Array:
+    """Polynomial equilibrium from (rho, u)."""
+    if rho.ndim >= 1 and rho.shape[-1] != 1:
+        rho = rho[..., None]
+    if u.shape[-1] != lattice.D:
+        u = jnp.reshape(u, (*u.shape[:-1], lattice.D))
+    return _POLY_EQ.compute({"rho": rho, "u": u}, lattice)
+
+
+# ======================================================================
+# No-slip (full bounce-back)
+# ======================================================================
+
 def _apply_no_slip(
-    f: Array,
-    lattice: Lattice,
-    axis: int,
-    side: int,
-    spatial_shape: tuple[int, ...],
+    f: Array, lattice: Lattice, axis: int, side: int, spatial_shape: tuple[int, ...],
 ) -> Array:
     D = len(spatial_shape)
-    N = lattice.N
-    vel = lattice.velocities
     opp = lattice.opposite_indices
     wall_index = 0 if side == 0 else spatial_shape[axis] - 1
-    into_wall = (vel[:, axis] < 0) if side == 0 else (vel[:, axis] > 0)
-    wall_slice_list: list[int | slice] = [slice(None)] * D
-    wall_slice_list[axis] = wall_index
-    wall_slice = tuple(wall_slice_list) + (slice(None),)
-    f_wall = f[wall_slice]
-    new_f_wall = jnp.where(
-        into_wall[None, ...], f_wall[..., opp], f_wall
-    )
-    return f.at[wall_slice].set(new_f_wall)
+    unknown = _unknown_mask(lattice, axis, side)
+    ws = _wall_slice(axis, wall_index, D)
+    f_wall = f[ws]
+    new_f_wall = jnp.where(unknown, f_wall[..., opp], f_wall)
+    return f.at[ws].set(new_f_wall)
 
+
+# ======================================================================
+# Free-slip (specular reflection)
+# ======================================================================
 
 def _apply_free_slip(
-    f: Array,
-    lattice: Lattice,
-    axis: int,
-    side: int,
-    spatial_shape: tuple[int, ...],
+    f: Array, lattice: Lattice, axis: int, side: int, spatial_shape: tuple[int, ...],
 ) -> Array:
     D = len(spatial_shape)
-    N = lattice.N
-    vel = lattice.velocities
-    mirror = lattice.mirror_indices_per_axis  # (D, N)
-    mirror_axis = mirror[axis]
+    mirror_axis = lattice.mirror_indices_per_axis[axis]
     wall_index = 0 if side == 0 else spatial_shape[axis] - 1
-    into_wall = (vel[:, axis] < 0) if side == 0 else (vel[:, axis] > 0)
-    wall_slice_list = [slice(None)] * D
-    wall_slice_list[axis] = wall_index
-    wall_slice = tuple(wall_slice_list) + (slice(None),)
-    f_wall = f[wall_slice]
-    new_f_wall = jnp.where(
-        into_wall[None, ...], f_wall[..., mirror_axis], f_wall
-    )
-    return f.at[wall_slice].set(new_f_wall)
+    unknown = _unknown_mask(lattice, axis, side)
+    ws = _wall_slice(axis, wall_index, D)
+    f_wall = f[ws]
+    new_f_wall = jnp.where(unknown, f_wall[..., mirror_axis], f_wall)
+    return f.at[ws].set(new_f_wall)
 
+
+# ======================================================================
+# Outflow (zero-gradient extrapolation)
+# ======================================================================
 
 def _apply_outflow(
-    f: Array,
-    lattice: Lattice,
-    axis: int,
-    side: int,
-    spatial_shape: tuple[int, ...],
+    f: Array, lattice: Lattice, axis: int, side: int, spatial_shape: tuple[int, ...],
 ) -> Array:
     D = len(spatial_shape)
-    vel = lattice.velocities
     wall_index = 0 if side == 0 else spatial_shape[axis] - 1
     neighbor_index = wall_index + (1 if side == 0 else -1)
-    into_wall = (vel[:, axis] < 0) if side == 0 else (vel[:, axis] > 0)
-    wall_slice_list = [slice(None)] * D
-    wall_slice_list[axis] = wall_index
-    wall_slice = tuple(wall_slice_list) + (slice(None),)
-    neighbor_slice_list = [slice(None)] * D
-    neighbor_slice_list[axis] = neighbor_index
-    neighbor_slice = tuple(neighbor_slice_list) + (slice(None),)
-    f_wall = f[wall_slice]
-    f_neighbor = f[neighbor_slice]
-    new_f_wall = jnp.where(into_wall[None, ...], f_neighbor, f_wall)
-    return f.at[wall_slice].set(new_f_wall)
+    unknown = _unknown_mask(lattice, axis, side)
+    ws = _wall_slice(axis, wall_index, D)
+    ns_list: list[int | slice] = [slice(None)] * D
+    ns_list[axis] = neighbor_index
+    ns = tuple(ns_list) + (slice(None),)
+    f_wall = f[ws]
+    f_neighbor = f[ns]
+    new_f_wall = jnp.where(unknown, f_neighbor, f_wall)
+    return f.at[ws].set(new_f_wall)
 
 
-def _zou_he_d2q9_west(
-    f_wall: Array, u_x: Array, u_y: Array, rho: Array | None = None
-) -> Array:
-    """Unknown: 1, 5, 8. If rho is None, compute from mass; else use prescribed rho."""
-    f0, f1, f2, f3, f4, f5, f6, f7, f8 = (
-        f_wall[..., 0], f_wall[..., 1], f_wall[..., 2], f_wall[..., 3],
-        f_wall[..., 4], f_wall[..., 5], f_wall[..., 6], f_wall[..., 7], f_wall[..., 8],
-    )
-    if rho is None:
-        rho = (f0 + f2 + f4 + 2.0 * (f3 + f6 + f7)) / (1.0 - u_x)
-    f1_new = f3 + (2.0 / 3.0) * rho * u_x
-    f5_new = f7 - 0.5 * (f2 - f4) + (1.0 / 6.0) * rho * u_x + (1.0 / 3.0) * rho * u_y
-    f8_new = f6 + 0.5 * (f2 - f4) + (1.0 / 6.0) * rho * u_x - (1.0 / 3.0) * rho * u_y
-    f_wall_new = f_wall.at[..., 1].set(f1_new).at[..., 5].set(f5_new).at[..., 8].set(f8_new)
-    return f_wall_new
+# ======================================================================
+# Zou-He velocity BC  (general, any D2Q9/D3Q19 face)
+# ======================================================================
 
-
-def _zou_he_d2q9_east(
-    f_wall: Array, u_x: Array, u_y: Array, rho: Array | None = None
-) -> Array:
-    """Unknown: 3, 6, 7."""
-    f0, f1, f2, f3, f4, f5, f6, f7, f8 = (
-        f_wall[..., 0], f_wall[..., 1], f_wall[..., 2], f_wall[..., 3],
-        f_wall[..., 4], f_wall[..., 5], f_wall[..., 6], f_wall[..., 7], f_wall[..., 8],
-    )
-    if rho is None:
-        rho = (f0 + f1 + f2 + f4 + 2.0 * (f5 + f8)) / (1.0 + u_x)
-    f3_new = f1 - (2.0 / 3.0) * rho * u_x
-    f6_new = f8 + 0.5 * (f2 - f4) - (1.0 / 6.0) * rho * u_x - (1.0 / 3.0) * rho * u_y
-    f7_new = f5 + 0.5 * (f2 - f4) - (1.0 / 6.0) * rho * u_x + (1.0 / 3.0) * rho * u_y
-    f_wall_new = f_wall.at[..., 3].set(f3_new).at[..., 6].set(f6_new).at[..., 7].set(f7_new)
-    return f_wall_new
-
-
-def _zou_he_d2q9_south(
-    f_wall: Array, u_x: Array, u_y: Array, rho: Array | None = None
-) -> Array:
-    """Unknown: 4, 7, 8 (e_y < 0)."""
-    f0, f1, f2, f3, f4, f5, f6, f7, f8 = (
-        f_wall[..., 0], f_wall[..., 1], f_wall[..., 2], f_wall[..., 3],
-        f_wall[..., 4], f_wall[..., 5], f_wall[..., 6], f_wall[..., 7], f_wall[..., 8],
-    )
-    if rho is None:
-        rho = (f0 + f1 + f2 + f3 + 2.0 * (f5 + f6)) / (1.0 - u_y)
-    f4_new = f2 - (2.0 / 3.0) * rho * u_y
-    f7_new = f5 - 0.5 * (f1 - f3) - (1.0 / 3.0) * rho * u_x - (1.0 / 6.0) * rho * u_y
-    f8_new = f6 + 0.5 * (f1 - f3) - (1.0 / 3.0) * rho * u_x + (1.0 / 6.0) * rho * u_y
-    f_wall_new = f_wall.at[..., 4].set(f4_new).at[..., 7].set(f7_new).at[..., 8].set(f8_new)
-    return f_wall_new
-
-
-def _zou_he_d2q9_north(
-    f_wall: Array, u_x: Array, u_y: Array, rho: Array | None = None
-) -> Array:
-    """Unknown: 2, 5, 6 (e_y > 0)."""
-    f0, f1, f2, f3, f4, f5, f6, f7, f8 = (
-        f_wall[..., 0], f_wall[..., 1], f_wall[..., 2], f_wall[..., 3],
-        f_wall[..., 4], f_wall[..., 5], f_wall[..., 6], f_wall[..., 7], f_wall[..., 8],
-    )
-    if rho is None:
-        rho = (f0 + f1 + f3 + f4 + 2.0 * (f7 + f8)) / (1.0 + u_y)
-    f2_new = f4 + (2.0 / 3.0) * rho * u_y
-    f5_new = f7 + 0.5 * (f1 - f3) + (1.0 / 3.0) * rho * u_x + (1.0 / 6.0) * rho * u_y
-    f6_new = f8 - 0.5 * (f1 - f3) + (1.0 / 3.0) * rho * u_x - (1.0 / 6.0) * rho * u_y
-    f_wall_new = f_wall.at[..., 2].set(f2_new).at[..., 5].set(f5_new).at[..., 6].set(f6_new)
-    return f_wall_new
-
-
-def _apply_zou_he_velocity_2d(
+def _apply_zou_he_velocity(
     f: Array,
     lattice: Lattice,
     axis: int,
@@ -224,100 +174,237 @@ def _apply_zou_he_velocity_2d(
     spatial_shape: tuple[int, ...],
     u_face: Array,
 ) -> Array:
-    """Zou–He velocity BC for D2Q9. u_face shape (..., 2) over the face."""
-    if lattice.N != 9:
-        raise NotImplementedError("Zou–He velocity BC is implemented only for D2Q9")
+    """Zou-He velocity BC: prescribed u, derive rho from mass, set unknowns
+    via non-equilibrium bounceback f_i = f_i^eq + (f_opp - f_opp^eq).
+
+    Works for any lattice; no hard-coded per-face formulas.
+    """
     D = len(spatial_shape)
+    opp = lattice.opposite_indices
+    vel = lattice.velocities                      # (N, D)
     wall_index = 0 if side == 0 else spatial_shape[axis] - 1
-    wall_slice_list = [slice(None)] * D
-    wall_slice_list[axis] = wall_index
-    wall_slice = tuple(wall_slice_list) + (slice(None),)
-    f_wall = f[wall_slice]
-    u_x = u_face[..., 0]
-    u_y = u_face[..., 1]
-    if axis == 0 and side == 0:
-        f_wall_new = _zou_he_d2q9_west(f_wall, u_x, u_y)
-    elif axis == 0 and side == 1:
-        f_wall_new = _zou_he_d2q9_east(f_wall, u_x, u_y)
-    elif axis == 1 and side == 0:
-        f_wall_new = _zou_he_d2q9_south(f_wall, u_x, u_y)
+    ws = _wall_slice(axis, wall_index, D)
+    f_wall = f[ws]                                # (...face_shape, N)
+    unknown = _unknown_mask(lattice, axis, side)   # (N,)
+
+    # Normal velocity component (signed: positive = into domain)
+    u_n = u_face[..., axis]
+    if side == 0:
+        sign = 1.0
     else:
-        f_wall_new = _zou_he_d2q9_north(f_wall, u_x, u_y)
-    return f.at[wall_slice].set(f_wall_new)
+        sign = -1.0
+
+    # Density from mass conservation:
+    # rho = [Σ_zero f_i + 2 * Σ_known_nonzero f_i] / (1 ∓ u_n)
+    # where "zero" means e_i[axis]==0, "known_nonzero" = e_i[axis] pointing
+    # from interior (opposite sign of unknown).
+    e_ax = vel[:, axis]                            # (N,)
+    is_zero = e_ax == 0
+    is_known_nz = (~unknown) & (~is_zero)
+
+    S_zero = jnp.sum(f_wall * is_zero, axis=-1)
+    S_known_nz = jnp.sum(f_wall * is_known_nz, axis=-1)
+
+    rho = (S_zero + 2.0 * S_known_nz) / (1.0 - sign * u_n)
+
+    # Equilibrium at (rho, u) and opposite
+    f_eq_wall = _f_eq(rho, u_face, lattice)
+    f_eq_opp = f_eq_wall[..., opp]
+
+    # Non-equilibrium bounceback: f_i = f_i^eq + (f_opp - f_opp^eq)
+    f_neqbb = f_eq_wall + (f_wall[..., opp] - f_eq_opp)
+
+    new_f_wall = jnp.where(unknown, f_neqbb, f_wall)
+    return f.at[ws].set(new_f_wall)
 
 
-def _equilibrium_d2q9(rho: Array, u: Array, lattice: Lattice) -> Array:
-    """Equilibrium distribution for D2Q9 from (rho, u). Same as ParticleDistribution.equilibrium."""
-    if u.shape[-1] != 2:
-        u = jnp.reshape(u, (*u.shape[:-1], 2))
-    e_dot_u = jnp.einsum("...c,dc->...d", u, lattice.velocities)
-    u_sq = jnp.sum(u**2, axis=-1, keepdims=True)
-    rho_exp = rho[..., None] if rho.ndim < u.ndim else rho
-    f_eq = (
-        rho_exp
-        * lattice.weights[lattice.indices][None, :]
-        * (
-            1.0
-            + e_dot_u / lattice.c_s_sq
-            + e_dot_u**2 / (2.0 * lattice.c_s_sq**2)
-            - u_sq / (2.0 * lattice.c_s_sq)
-        )
-    )
-    return f_eq
+# ======================================================================
+# Zou-He pressure BC  (general, any D2Q9/D3Q19 face)
+# ======================================================================
 
-
-# Unknown population indices per (axis, side) for D2Q9: directions that stream from outside.
-_D2Q9_UNKNOWN: dict[tuple[int, int], tuple[int, ...]] = {
-    (0, 0): (1, 5, 8),   # west
-    (0, 1): (3, 6, 7),   # east
-    (1, 0): (4, 7, 8),   # south
-    (1, 1): (2, 5, 6),   # north
-}
-
-
-def _apply_zou_he_pressure_2d(
+def _apply_zou_he_pressure(
     f: Array,
     lattice: Lattice,
     axis: int,
     side: int,
     spatial_shape: tuple[int, ...],
     rho_face: Array,
-    u_interior: Array | None,
+    macro: MacroState | None,
 ) -> Array:
-    """Pressure BC: prescribed rho; set unknown populations to f_eq(rho, u_interior).
+    """Zou-He pressure BC: prescribed rho, derive u from momentum, set unknowns
+    via non-equilibrium bounceback.
 
-    Uses equilibrium at (rho_prescribed, u from interior neighbor). Stable; may
-    show a small mass drift until the flow is developed.
+    The normal velocity is computed from the mass equation:
+        u_n = 1 - (Σ_zero f + 2 * Σ_known_nz f) / rho     (side 0)
+        u_n = -1 + (Σ_zero f + 2 * Σ_known_nz f) / rho     (side 1)
+
+    Transverse velocity is taken from the interior neighbor (zero-gradient
+    extrapolation), which is standard practice and matches the approach used
+    in many validated LBM codes.
     """
-    if lattice.N != 9:
-        raise NotImplementedError("Pressure BC is implemented only for D2Q9")
     D = len(spatial_shape)
+    opp = lattice.opposite_indices
+    vel = lattice.velocities
     wall_index = 0 if side == 0 else spatial_shape[axis] - 1
     neighbor_index = wall_index + (1 if side == 0 else -1)
-    wall_slice_list = [slice(None)] * D
-    wall_slice_list[axis] = wall_index
-    wall_slice = tuple(wall_slice_list) + (slice(None),)
-    neighbor_slice_list = [slice(None)] * D
-    neighbor_slice_list[axis] = neighbor_index
-    neighbor_slice = tuple(neighbor_slice_list) + (slice(None),)
-    f_wall = f[wall_slice]
+    ws = _wall_slice(axis, wall_index, D)
+    f_wall = f[ws]
+    unknown = _unknown_mask(lattice, axis, side)
+
     if rho_face.ndim >= 1 and rho_face.shape[-1] == 1:
         rho = jnp.squeeze(rho_face, axis=-1)
     else:
         rho = rho_face
-    if u_interior is None:
-        u_face = jnp.zeros((*rho.shape, 2))
-    else:
-        u_face = u_interior[neighbor_slice]
-    if u_face.ndim == 1:
-        u_face = u_face[None, :]
-    f_eq = _equilibrium_d2q9(rho, u_face, lattice)
-    unknown_idx = _D2Q9_UNKNOWN[(axis, side)]
-    f_wall_new = f_wall
-    for i in unknown_idx:
-        f_wall_new = f_wall_new.at[..., i].set(f_eq[..., i])
-    return f.at[wall_slice].set(f_wall_new)
+    rho_safe = jnp.maximum(rho, 1e-10)
 
+    e_ax = vel[:, axis]
+    is_zero = e_ax == 0
+    is_known_nz = (~unknown) & (~is_zero)
+
+    S_zero = jnp.sum(f_wall * is_zero, axis=-1)
+    S_known_nz = jnp.sum(f_wall * is_known_nz, axis=-1)
+
+    # Normal velocity from mass conservation
+    if side == 0:
+        u_n = 1.0 - (S_zero + 2.0 * S_known_nz) / rho_safe
+    else:
+        u_n = -1.0 + (S_zero + 2.0 * S_known_nz) / rho_safe
+
+    # Transverse velocity from interior neighbor
+    ns_list: list[int | slice] = [slice(None)] * D
+    ns_list[axis] = neighbor_index
+    ns = tuple(ns_list)
+    if macro is not None and "u" in macro:
+        u_interior = macro["u"][ns]
+    else:
+        u_interior = jnp.zeros((*rho.shape, D))
+
+    # Build full velocity: replace normal component with the derived one
+    u_face_full = u_interior.at[..., axis].set(u_n)
+
+    # Non-equilibrium bounceback
+    f_eq_wall = _f_eq(rho, u_face_full, lattice)
+    f_eq_opp = f_eq_wall[..., opp]
+    f_neqbb = f_eq_wall + (f_wall[..., opp] - f_eq_opp)
+
+    new_f_wall = jnp.where(unknown, f_neqbb, f_wall)
+    return f.at[ws].set(new_f_wall)
+
+
+# ======================================================================
+# Absorbing layer (sponge)
+# ======================================================================
+
+class AbsorbingLayerSpec(eqx.Module):
+    """Specification for absorbing (sponge) layer on one or more faces.
+
+    The damping coefficient increases quadratically from 0 at the inner
+    edge of the buffer to ``sigma_max`` at the domain boundary:
+
+        σ(d) = sigma_max * ((width - d) / width)²   for d < width
+
+    The distribution is relaxed toward equilibrium at rest:
+        f_damped = f - σ * (f - f_eq(rho₀, 0))
+
+    Attributes:
+        sigma: Pre-computed damping field, shape ``spatial_shape``.
+               Build via :meth:`build`.
+        rho_0: Reference (background) density for the equilibrium target.
+    """
+
+    sigma: Array
+    rho_0: float = 1.0
+
+    @staticmethod
+    def build(
+        spatial_shape: tuple[int, ...],
+        *,
+        rho_0: float = 1.0,
+        faces: dict[tuple[int, int], dict] | None = None,
+    ) -> AbsorbingLayerSpec:
+        """Construct from per-face specifications.
+
+        Args:
+            spatial_shape: Domain shape, e.g. (Nx, Ny).
+            rho_0: Background density.
+            faces: Mapping ``(axis, side) -> {"width": int, "sigma_max": float}``.
+        """
+        D = len(spatial_shape)
+        sigma = jnp.zeros(spatial_shape)
+        if faces is None:
+            return AbsorbingLayerSpec(sigma=sigma, rho_0=rho_0)
+
+        for (ax, sd), params in faces.items():
+            width = params["width"]
+            sigma_max = params["sigma_max"]
+            coords = jnp.arange(spatial_shape[ax], dtype=jnp.float32)
+            if sd == 1:
+                coords = spatial_shape[ax] - 1.0 - coords
+            shape = [1] * D
+            shape[ax] = spatial_shape[ax]
+            dist = jnp.reshape(coords, shape)
+            dist = jnp.broadcast_to(dist, spatial_shape)
+            in_buffer = dist < width
+            layer = sigma_max * ((width - dist) / width) ** 2
+            layer = jnp.where(in_buffer, layer, 0.0)
+            sigma = jnp.maximum(sigma, layer)
+
+        return AbsorbingLayerSpec(sigma=sigma, rho_0=rho_0)
+
+
+def _apply_absorbing(
+    f: Array, lattice: Lattice, absorbing: AbsorbingLayerSpec,
+) -> Array:
+    """Apply sponge damping: f -= σ * (f - f_eq(rho₀, 0))."""
+    D = lattice.D
+    spatial_shape = f.shape[:D]
+    rho = jnp.full(spatial_shape + (1,), absorbing.rho_0)
+    u = jnp.zeros(spatial_shape + (D,))
+    f_eq_rest = _POLY_EQ.compute({"rho": rho, "u": u}, lattice)
+    sigma = absorbing.sigma[..., None]  # (..., 1) for broadcast over N
+    return f - sigma * (f - f_eq_rest)
+
+
+# ======================================================================
+# Equilibrium inlet
+# ======================================================================
+
+def _apply_inlet_eq(
+    f: Array,
+    lattice: Lattice,
+    axis: int,
+    side: int,
+    spatial_shape: tuple[int, ...],
+    inlet_state: MacroState,
+) -> Array:
+    """Equilibrium inlet: set f = f_eq(rho, u) at the boundary face."""
+    D = len(spatial_shape)
+    wall_index = 0 if side == 0 else spatial_shape[axis] - 1
+    ws = _wall_slice(axis, wall_index, D)
+    rho = inlet_state["rho"]
+    u = inlet_state["u"]
+    if rho.ndim < D:
+        rho = rho[..., None]
+    f_eq_face = _f_eq(rho, u, lattice)
+
+    # Select the face slice (rho/u might be full-domain or already face-shaped)
+    ns_list: list[int | slice] = [slice(None)] * D
+    ns_list[axis] = wall_index
+    face_idx = tuple(ns_list)
+    try:
+        f_eq_at_face = f_eq_face[face_idx]
+    except IndexError:
+        f_eq_at_face = f_eq_face
+
+    f_wall = f[ws]
+    unknown = _unknown_mask(lattice, axis, side)
+    new_f_wall = jnp.where(unknown, f_eq_at_face, f_wall)
+    return f.at[ws].set(new_f_wall)
+
+
+# ======================================================================
+# Main dispatcher
+# ======================================================================
 
 def apply_boundaries(
     f_streamed: Array,
@@ -326,25 +413,25 @@ def apply_boundaries(
     macro: MacroState | None = None,
     boundary_velocity: dict[tuple[int, int], Array] | None = None,
     boundary_pressure: dict[tuple[int, int], Array] | None = None,
+    absorbing_spec: AbsorbingLayerSpec | None = None,
+    inlet_states: dict[tuple[int, int], MacroState] | None = None,
 ) -> Array:
-    """Apply boundary conditions to a streamed distribution.
+    """Apply all boundary conditions to a streamed distribution.
 
-    Periodic faces are left unchanged. For "velocity" and "pressure" faces you must
-    pass boundary_velocity or boundary_pressure keyed by (axis, side). Arrays must
-    have shape matching the face (e.g. (Y,) or (Y, 2) for 2D x-face).
+    Periodic faces need no action (handled by ``jnp.roll`` in streaming).
     """
-    if not spec.has_any_non_periodic():
+    if not spec.has_any_non_periodic() and absorbing_spec is None:
         return f_streamed
 
     D = lattice.D
     N = lattice.N
     shape = f_streamed.shape
     spatial_shape = tuple(shape[:D])
-    assert shape == spatial_shape + (N,), f"{shape} vs {spatial_shape} + ({N},)"
 
     f = f_streamed
     boundary_velocity = boundary_velocity or {}
     boundary_pressure = boundary_pressure or {}
+    inlet_states = inlet_states or {}
     macro = macro or {}
 
     for axis in range(D):
@@ -352,7 +439,7 @@ def apply_boundaries(
             kind = spec.get(axis, side)
             if kind == "periodic":
                 continue
-            if kind == "no_slip":
+            elif kind == "no_slip":
                 f = _apply_no_slip(f, lattice, axis, side, spatial_shape)
             elif kind == "free_slip":
                 f = _apply_free_slip(f, lattice, axis, side, spatial_shape)
@@ -365,8 +452,8 @@ def apply_boundaries(
                         f"Boundary (axis={axis}, side={side}) is 'velocity' but no "
                         "boundary_velocity[(axis, side)] was provided."
                     )
-                f = _apply_zou_he_velocity_2d(
-                    f, lattice, axis, side, spatial_shape, u_face
+                f = _apply_zou_he_velocity(
+                    f, lattice, axis, side, spatial_shape, u_face,
                 )
             elif kind == "pressure":
                 rho_face = boundary_pressure.get((axis, side))
@@ -375,8 +462,23 @@ def apply_boundaries(
                         f"Boundary (axis={axis}, side={side}) is 'pressure' but no "
                         "boundary_pressure[(axis, side)] was provided."
                     )
-                u = macro.get("u")
-                f = _apply_zou_he_pressure_2d(
-                    f, lattice, axis, side, spatial_shape, rho_face, u
+                f = _apply_zou_he_pressure(
+                    f, lattice, axis, side, spatial_shape, rho_face, macro,
                 )
+            elif kind == "absorbing":
+                pass  # handled globally below
+            elif kind == "inlet_eq":
+                inlet_state = inlet_states.get((axis, side))
+                if inlet_state is None:
+                    raise ValueError(
+                        f"Boundary (axis={axis}, side={side}) is 'inlet_eq' but no "
+                        "inlet_states[(axis, side)] was provided."
+                    )
+                f = _apply_inlet_eq(
+                    f, lattice, axis, side, spatial_shape, inlet_state,
+                )
+
+    if absorbing_spec is not None:
+        f = _apply_absorbing(f, lattice, absorbing_spec)
+
     return f

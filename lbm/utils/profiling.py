@@ -1,4 +1,4 @@
-"""GPU profiling utilities with a unified interface for AMD (ROCm) and NVIDIA."""
+"""GPU profiling utilities with a unified interface for AMD (ROCm), NVIDIA, and Apple."""
 
 import os
 import sys
@@ -253,21 +253,134 @@ def _import_pynvml():
 
 
 # -----------------------------------------------------------------------------
+# Apple (Metal) implementation
+# -----------------------------------------------------------------------------
+
+
+def _get_apple_gpu_stats() -> Dict[str, Any]:
+    """Call apple_gpu.accelerator_performance_statistics() and return the dict."""
+    try:
+        import apple_gpu  # noqa: PLC0415
+    except ImportError as e:
+        raise ImportError(
+            "apple-gpu is required for Apple GPU profiling. "
+            "Install with: pip install apple-gpu"
+        ) from e
+    return apple_gpu.accelerator_performance_statistics()
+
+
+def _get_apple_system_memory_total() -> int:
+    """Total physical system memory in bytes (unified with GPU on M-series)."""
+    if sys.platform == "darwin":
+        import subprocess
+        try:
+            out = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if out.returncode == 0 and out.stdout.strip().isdigit():
+                return int(out.stdout.strip())
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            pass
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGES_SIZE")
+    except (ValueError, OSError, AttributeError):
+        return 0
+
+
+class AppleProfiler(GPUProfiler):
+    """Profiler for Apple GPUs (Metal) using the apple_gpu package.
+
+    Reports memory (used/alloc and system total for unified memory) and
+    Device Utilization % from Metal. Power and temperature are not available
+    from the Metal API and are reported as 0.
+    """
+
+    @property
+    def name(self) -> str:
+        return "apple"
+
+    def _stats(self, device: int) -> Dict[str, Any]:
+        stats = _get_apple_gpu_stats()
+        if device != 0:
+            return stats
+        return stats
+
+    def getPower(self, device: int) -> Dict[str, Any]:
+        _ = self._stats(device)
+        return {"power": 0.0, "unit": "W", "power_type": "unavailable"}
+
+    def listDevices(self) -> List[int]:
+        return [0]
+
+    def getMemInfo(self, device: int) -> Tuple[int, int]:
+        stats = self._stats(device)
+        used = int(stats.get("In use system memory", 0))
+        total = _get_apple_system_memory_total()
+        if total == 0:
+            total = int(stats.get("Alloc system memory", 0))
+        if total == 0:
+            total = used
+        return used, total
+
+    def getUtilization(self, device: int) -> float:
+        stats = self._stats(device)
+        return float(stats.get("Device Utilization %", 0))
+
+    def getTemp(self, device: int, sensor: str | None = None) -> Tuple[str, float]:
+        _ = self._stats(device)
+        return ("GPU", 0.0)
+
+    def log(self, device: int | None = None) -> str:
+        """One-line log with used/alloc GiB and system total for unified memory."""
+        devices = [device] if device is not None else self.listDevices()
+        if not devices:
+            return f"{self.name}: no devices"
+        parts: List[str] = []
+        system_gib = _bytes_to_gib(_get_apple_system_memory_total())
+        for d in devices:
+            try:
+                stats = self._stats(d)
+                power_info = self.getPower(d)
+                power = power_info.get("power", 0)
+                try:
+                    power = float(power)
+                except (TypeError, ValueError):
+                    power = 0.0
+                unit = power_info.get("unit", "W")
+                util = self.getUtilization(d)
+                _, temp = self.getTemp(d)
+                used_b = int(stats.get("In use system memory", 0))
+                alloc_b = int(stats.get("Alloc system memory", 0))
+                used_gib = _bytes_to_gib(used_b)
+                alloc_gib = _bytes_to_gib(alloc_b) if alloc_b > 0 else used_gib
+                parts.append(
+                    f"{self.name} gpu{d}: {power:.1f}{unit}, {temp:.0f}°C, {util:.0f}% util, "
+                    f"{used_gib:.1f}/{alloc_gib:.1f} GiB alloc ({system_gib:.1f} GiB system)"
+                )
+            except Exception:
+                parts.append(f"{self.name} gpu{d}: (unavailable)")
+        return "; ".join(parts)
+
+
+# -----------------------------------------------------------------------------
 # General interface: pick profiler for current system
 # -----------------------------------------------------------------------------
 
 
 def get_profiler() -> GPUProfiler:
-    """Return a GPUProfiler for the current system (NVIDIA or AMD ROCm).
+    """Return a GPUProfiler for the current system (NVIDIA, AMD ROCm, or Apple).
 
-    Tries NVIDIA first, then ROCm. Use this as the single entry point when
-    you want profiling to work on any supported system.
+    Tries NVIDIA first, then ROCm, then Apple (Metal on macOS). Use this as the
+    single entry point when you want profiling to work on any supported system.
 
     Returns:
-        An instance of NvidiaProfiler or RocmProfiler.
+        An instance of NvidiaProfiler, RocmProfiler, or AppleProfiler.
 
     Raises:
-        RuntimeError: If neither NVIDIA nor ROCm is available.
+        RuntimeError: If no supported profiler is available.
     """
     try:
         return NvidiaProfiler()
@@ -277,8 +390,16 @@ def get_profiler() -> GPUProfiler:
         return RocmProfiler()
     except (ValueError, ImportError, Exception):
         pass
+    try:
+        return AppleProfiler()
+    except (ImportError, Exception):
+        pass
     raise RuntimeError(
         "No GPU profiler available. "
         "For NVIDIA: install nvidia-ml-py and ensure NVML is available. "
-        "For AMD: set ROCM_SMI_PATH and ensure rocm_smi is available."
+        "For AMD: set ROCM_SMI_PATH and ensure rocm_smi is available. "
+        "For Apple: install apple-gpu (macOS only)."
     )
+
+
+

@@ -1,0 +1,4 @@
+type: isothermal
+Re: 100.0
+Ma: 0.1
+char_length: null

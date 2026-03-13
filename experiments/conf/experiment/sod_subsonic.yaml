@@ -1,0 +1,42 @@
+# @package _global_
+# SOD shock tube — subsonic Riemann problem
+# Reference: kinet/experiments/sod/subsonic
+
+defaults:
+  - override /solver: compressible
+  - override /equilibrium: extended
+  - override /lattice: d2q9
+
+lattice:
+  shifts: [0.057, 0.0]
+
+experiment:
+  name: sod_subsonic
+  initial_conditions: sod_subsonic
+  spatial_shape: [3001, 5]
+  dt: 1.0
+  t_max: 500.0
+  log_interval: 50
+  save_interval: 10
+  plot_interval: 50
+  plot_fields: [rho, u]
+  output_variables: [rho, u, T]
+  obstacles: []
+  sources: []
+  rho_L: 0.5
+  rho_R: 2.0
+  T_L: 0.2
+  T_R: 0.025
+
+solver:
+  Pr: 0.71
+  gamma: 1.4
+  viscosity: 0.025
+
+boundary:
+  x:
+    low: outflow
+    high: outflow
+  y:
+    low: outflow
+    high: outflow

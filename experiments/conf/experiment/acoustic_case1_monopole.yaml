@@ -1,0 +1,51 @@
+# @package _global_
+# Acoustic case 1: monopole
+# Reference: kinet/experiments/acoustic/case1_monopole
+
+defaults:
+  - override /solver: acoustic
+  - override /equilibrium: entropic
+  - override /lattice: d2q9
+
+experiment:
+  name: acoustic_case1_monopole
+  initial_conditions: acoustic_uniform
+  spatial_shape: [300, 300]
+  dt: 1.0
+  t_max: 3000.0
+  log_interval: 100
+  save_interval: 50
+  plot_interval: 100
+  plot_fields: [rho, u]
+  output_variables: [rho, u]
+  obstacles: []
+  sources:
+    - kind: monopole
+      position: [150, 150]
+      amplitude: 0.01
+      frequency: 0.121
+
+solver:
+  rho_0: 1.0
+  tau: 0.501
+
+boundary:
+  x:
+    low: periodic
+    high: periodic
+  y:
+    low: periodic
+    high: periodic
+  absorbing:
+    x_low:
+      width: 40
+      sigma_max: 0.3
+    x_high:
+      width: 40
+      sigma_max: 0.3
+    y_low:
+      width: 40
+      sigma_max: 0.3
+    y_high:
+      width: 40
+      sigma_max: 0.3

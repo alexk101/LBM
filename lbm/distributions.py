@@ -4,7 +4,7 @@
 Supports single-distribution (isothermal), double-distribution (thermal:
 momentum f + energy g), and multiphase models. All distributions consume
 and produce macroscopic fields via a shared state dict so that e.g. the
-thermal equilibrium g_eq can use ρ, u from the momentum distribution and
+thermal equilibrium g_eq can use rho, u from the momentum distribution and
 T from the previous step (see Wikipedia: Lattice Boltzmann methods § Mathematical
 equations for simulations).
 """
@@ -16,8 +16,10 @@ import equinox as eqx
 import jax.numpy as jnp
 from jax import Array
 from .definitions import MacroState
-from .equilibrium import EquilibriumModel
+from .equilibrium import EquilibriumModel, PolynomialEquilibrium
 from .lattice import Lattice
+
+_POLYNOMIAL_EQ = PolynomialEquilibrium()
 
 
 class Distribution(eqx.Module):
@@ -31,7 +33,7 @@ class Distribution(eqx.Module):
     Design (modular coupling):
         - equilibrium(macro, lattice): reads from macro (e.g. "rho", "u", "T")
         - lift(f, lattice, macro=None): writes fields into the state; may read
-          macro for normalization (e.g. T = Σg_i/ρ)
+          macro for normalization (e.g. T = Σg_i/rho)
         - relaxation_time: BGK relaxation parameter (τ_f or τ_g)
 
     Parameters:
@@ -71,7 +73,7 @@ class Distribution(eqx.Module):
             f: Post-streaming distribution (..., N).
             lattice: Lattice configuration.
             macro: Current macro state; used by some distributions (e.g. thermal
-                   uses macro["rho"] for T = Σg_i/ρ).
+                   uses macro["rho"] for T = Σg_i/rho).
 
         Returns:
             Dict of field name -> array to merge into macro state (e.g. {"rho", "u"}
@@ -113,100 +115,79 @@ class ParticleDistribution(Distribution):
         return self.tau
 
     def equilibrium(self, macro: MacroState, lattice: Lattice) -> Array:
-        """Equilibrium from equilibrium_model if set, else built-in polynomial."""
-        if self.equilibrium_model is not None:
-            return self.equilibrium_model.compute(macro, lattice)
-        # Built-in polynomial (same as PolynomialEquilibrium) for backward compatibility
-        rho = macro["rho"]
-        u = macro["u"]
-        if rho.ndim >= 1 and rho.shape[-1] == 1:
-            rho = jnp.squeeze(rho, axis=-1)
-        e_dot_u = jnp.einsum("...c,dc->...d", u, lattice.velocities)
-        u_sq = jnp.sum(u**2, axis=-1, keepdims=True)
-        f_eq = (
-            rho[..., None]
-            * lattice.weights[lattice.indices][None, :]
-            * (
-                1.0
-                + e_dot_u / lattice.c_s_sq
-                + e_dot_u**2 / (2.0 * lattice.c_s_sq**2)
-                - u_sq / (2.0 * lattice.c_s_sq)
-            )
-        )
-        return f_eq
+        model = self.equilibrium_model if self.equilibrium_model is not None else _POLYNOMIAL_EQ
+        return model.compute(macro, lattice)
 
     def lift(
         self, f: Array, lattice: Lattice, macro: MacroState | None = None
     ) -> dict[str, Array]:
         """Extracts macroscopic fields from distribution function via moment calculation."""
         rho = jnp.sum(f, axis=-1, keepdims=True)
-        momentum = jnp.einsum("...i,ic->...c", f, lattice.velocities)
+        momentum = jnp.einsum("...i,ic->...c", f, lattice.e)
         u = momentum / (rho + 1e-10)
         return {"rho": rho, "u": u}
 
 
 class ThermalDistribution(Distribution):
-    """Energy distribution for thermal LBM using double-distribution approach.
+    """Energy distribution G for compressible thermal LBM (double-distribution F+G).
 
-    This model adds temperature transport to the standard incompressible flow,
-    enabling simulation of natural convection and heat transfer phenomena.
+    The G distribution carries total energy density. Its zeroth moment is
+    ``sum(g_i) = 2 * rho * E`` where ``E = T*Cv + |u|^2/2`` is the total
+    energy per unit mass. Temperature is recovered via:
+        ``T = (sum(g)/(2*rho) - |u|^2/2) / Cv``
 
-    Physics:
-        - Two separate distributions: F (momentum) + G (energy/temperature)
-        - Temperature is advected by velocity field from F distribution
-        - Thermal diffusivity controlled by τ_T parameter
+    The equilibrium should be Levermore (Newton-solved) for compressible flows.
+    Pass ``equilibrium_model=LevermoreEquilibrium(Cv=...)`` to use it; if None,
+    falls back to a simple polynomial expansion (NOT recommended for production).
 
     Parameters:
-        name: Identifier for this distribution (default: "Thermal")
-        label: Symbolic label used in output fields (default: "G")
-        tau_T: Relaxation time for temperature field (default: 0.5)
-        gamma: Heat capacity ratio (adiabatic index, default: 1.4 for air)
-
-    Coupled Simulation Notes:
-        - Use ParticleDistribution + ThermalDistribution together
-        - Prandtl number = ν/α ≈ τ/τ_T (ratio of momentum to thermal diffusivity)
-        - Typical values: Pr ~ 0.7 for gases, Pr ~ 7 for water
+        tau_T: Relaxation time for the energy field.
+        gamma: Heat capacity ratio (default 1.4 for diatomic gas).
+        Cv: Specific heat at constant volume in lattice units.
+            For ideal gas: Cv = 1/(gamma - 1).  Must match the Cv used
+            by the equilibrium model.
+        equilibrium_model: Pluggable equilibrium (e.g. LevermoreEquilibrium).
     """
 
     name: str = "Thermal"
     label: str = "G"
     tau_T: float = 0.5
     gamma: float = 1.4
+    Cv: float = 2.5
+    equilibrium_model: EquilibriumModel | None = None
 
     def relaxation_time(self) -> float:
         return self.tau_T
 
     def equilibrium(self, macro: MacroState, lattice: Lattice) -> Array:
-        """Thermal equilibrium g_eq: temperature advected by u, ρT normalization."""
-        rho = macro["rho"]
-        u = macro["u"]
-        T = macro["T"]
-        if rho.ndim >= 1 and rho.shape[-1] == 1:
-            rho = jnp.squeeze(rho, axis=-1)
-        if T.ndim >= 1 and T.shape[-1] == 1:
-            T = jnp.squeeze(T, axis=-1)
-        peculiar_velocity = lattice.velocities[None, ...] - u[..., None, :]
-        e_minus_u_sq = jnp.sum(peculiar_velocity**2, axis=-1)
-        exp_term = jnp.exp(-e_minus_u_sq / (2.0 * lattice.c_s_sq))
-        g_eq = (
-            rho[..., None] * T[..., None] / (2.0 * jnp.pi * lattice.c_s_sq) ** 1.0
-        ) * exp_term
-        return g_eq
+        if self.equilibrium_model is not None:
+            return self.equilibrium_model.compute(macro, lattice)
+        return _POLYNOMIAL_EQ.compute(macro, lattice)
 
     def lift(
         self, f: Array, lattice: Lattice, macro: MacroState | None = None
     ) -> dict[str, Array]:
-        """T = Σ_i g_i / ρ (zeroth moment normalized by density from momentum)."""
+        """Extract temperature from the energy distribution.
+
+        T = (E - |u|^2/2) / Cv,  where E = sum(g_i) / (2 * rho).
+        """
         sum_g = jnp.sum(f, axis=-1, keepdims=True)
         if macro is not None and "rho" in macro:
             rho = macro["rho"]
-            if rho.ndim >= 1 and rho.shape[-1] == 1:
-                rho = rho  # keep (..., 1) for broadcast
-            else:
+            if rho.ndim < 1 or rho.shape[-1] != 1:
                 rho = rho[..., None]
-            T = sum_g / (rho + 1e-10)
         else:
-            T = sum_g
+            rho = jnp.ones_like(sum_g)
+
+        u = macro["u"] if macro is not None and "u" in macro else None
+
+        E = sum_g / (2.0 * rho + 1e-10)
+        if u is not None:
+            u_sq = jnp.sum(u ** 2, axis=-1, keepdims=True)
+            T = (E - 0.5 * u_sq) / self.Cv
+        else:
+            T = E / self.Cv
+        T = jnp.maximum(T, 1e-10)
         return {"T": T}
 
 
@@ -248,12 +229,12 @@ class MultiphaseDistribution(Distribution):
         u = macro["u"]
         if rho.ndim >= 1 and rho.shape[-1] == 1:
             rho = jnp.squeeze(rho, axis=-1)
-        psi = rho[..., None] + self.interaction_strength * rho**2
-        e_dot_u = jnp.einsum("...c,dc->...d", u, lattice.velocities)
+        psi = rho + self.interaction_strength * rho**2
+        e_dot_u = jnp.einsum("...c,dc->...d", u, lattice.e)
         u_sq = jnp.sum(u**2, axis=-1, keepdims=True)
         f_eq = (
-            psi
-            * lattice.weights[lattice.indices][None, :]
+            psi[..., None]
+            * lattice.expanded_weights[None, :]
             * (
                 1.0
                 + e_dot_u / lattice.c_s_sq
@@ -268,7 +249,7 @@ class MultiphaseDistribution(Distribution):
     ) -> dict[str, Array]:
         """Density and velocity from multiphase distribution (same moments as standard)."""
         rho = jnp.sum(f, axis=-1, keepdims=True)
-        momentum = jnp.einsum("...i,ic->...c", f, lattice.velocities)
+        momentum = jnp.einsum("...i,ic->...c", f, lattice.e)
         u = momentum / (rho + 1e-10)
 
         return {"rho": rho, "u": u}

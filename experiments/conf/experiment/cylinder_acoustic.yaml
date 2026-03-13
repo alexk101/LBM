@@ -1,0 +1,62 @@
+# @package _global_
+# Flow around cylinder — acoustic / isothermal
+# Reference: kinet/experiments/flow_around_objects/cylinder_acoustic
+
+defaults:
+  - override /solver: isothermal
+  - override /equilibrium: polynomial
+  - override /lattice: d2q9
+
+lattice:
+  shifts: [0.1, 0.0]
+
+experiment:
+  name: cylinder_acoustic
+  initial_conditions: cylinder_acoustic
+  spatial_shape: [500, 240]
+  dt: 1.0
+  t_max: 10000.0
+  log_interval: 100
+  save_interval: 50
+  plot_interval: 200
+  plot_fields: [rho, u]
+  output_variables: [rho, u]
+  obstacles:
+    - type: cylinder
+      center: [100, 120]
+      radius: 10
+  sources:
+    - kind: dipole
+      position: [400, 40]
+      amplitude: 0.015
+      frequency: 0.24
+      direction: [0.0, 1.0]
+  Ma: 0.173
+
+solver:
+  Re: 37500.0
+  Ma: 0.173
+  char_length: 500.0
+
+boundary:
+  x:
+    low: velocity
+    high: outflow
+  y:
+    low: outflow
+    high: outflow
+  velocity:
+    x_low: [0.1, 0.0]
+  absorbing:
+    x_low:
+      width: 30
+      sigma_max: 0.3
+    x_high:
+      width: 30
+      sigma_max: 0.3
+    y_low:
+      width: 30
+      sigma_max: 0.3
+    y_high:
+      width: 30
+      sigma_max: 0.3

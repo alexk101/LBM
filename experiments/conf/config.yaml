@@ -1,0 +1,24 @@
+defaults:
+  - lattice: d2q9
+  - solver: isothermal
+  - collision: bgk
+  - equilibrium: polynomial
+  - experiment: double_shear_layer
+  - _self_
+
+name: ${experiment.name}
+
+simulation:
+  spatial_shape: ${experiment.spatial_shape}
+  dt: ${experiment.dt}
+  t_max: ${experiment.t_max}
+  log_interval: ${experiment.log_interval}
+  save_interval: ${experiment.save_interval}
+  save_path: outputs/${name}
+  plot_enabled: true
+  plot_interval: ${experiment.plot_interval}
+  plot_fields: ${experiment.plot_fields}
+
+sources: ${experiment.sources}
+initial_conditions: ${experiment.initial_conditions}
+output_variables: ${experiment.output_variables}
